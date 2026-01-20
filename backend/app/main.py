@@ -1,23 +1,21 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import pandas as pd
-import hashlib
-import json
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from typing import List, Optional, Dict
 import uuid
+import pandas as pd
+import io
+import sys
+import json
+import hashlib
 from datetime import datetime
-from typing import Dict, List, Optional, Any
 import structlog
 from contextlib import asynccontextmanager
-import asyncio
-from pathlib import Path
-import logging
-import sys
 from sqlalchemy import func
-
-from .database import get_db, engine, Base
-from .models import IngestRun, DataRow, ErrorLog, RunStatus
-from .schemas import IngestRunResponse
+from .database import SessionLocal, engine, Base
+from .models import IngestRun, DataRow, ErrorLog, RunStatus, ErrorCode
+from .schemas import IngestRunResponse, RunDetails, ErrorDetails, StatsResponse, IngestRun as IngestRunSchema
 from .pipeline import CSVProcessor
 
 logging.basicConfig(
@@ -77,8 +75,9 @@ async def upload_csv(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="Only CSV files are allowed")
+    if not (file.filename.endswith('.csv') or 
+            file.filename.endswith(('.xlsx', '.xls', '.xlsm'))):
+        raise HTTPException(status_code=400, detail="Only CSV and Excel files are allowed")
     
     run_id = str(uuid.uuid4())
     
@@ -285,3 +284,89 @@ async def get_stats():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "active_runs": len(active_runs)}
+
+@app.get("/export/{run_id}")
+async def export_data(run_id: str, format: str = "csv"):
+    db = next(get_db())
+    
+    # Get the run
+    run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    # Get all data rows for this run
+    data_rows = db.query(DataRow).filter(DataRow.run_id == run_id).all()
+    
+    if not data_rows:
+        raise HTTPException(status_code=404, detail="No data found for this run")
+    
+    # Convert to DataFrame
+    data = []
+    for row in data_rows:
+        normalized_data = json.loads(row.normalized_data)
+        data.append(normalized_data)
+    
+    df = pd.DataFrame(data)
+    
+    # Create file in memory
+    output = io.BytesIO()
+    
+    if format.lower() == "csv":
+        df.to_csv(output, index=False)
+        media_type = "text/csv"
+        filename = f"pipecheck_export_{run_id}.csv"
+    elif format.lower() == "excel":
+        df.to_excel(output, index=False, engine='openpyxl')
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"pipecheck_export_{run_id}.xlsx"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported format. Use 'csv' or 'excel'")
+    
+    output.seek(0)
+    
+    return StreamingResponse(
+        io.BytesIO(output.read()),
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+@app.get("/export/all")
+async def export_all_data(format: str = "csv"):
+    db = next(get_db())
+    
+    # Get all successful data rows
+    data_rows = db.query(DataRow).all()
+    
+    if not data_rows:
+        raise HTTPException(status_code=404, detail="No data found")
+    
+    # Convert to DataFrame
+    data = []
+    for row in data_rows:
+        normalized_data = json.loads(row.normalized_data)
+        normalized_data['run_id'] = row.run_id  # Add run_id for reference
+        data.append(normalized_data)
+    
+    df = pd.DataFrame(data)
+    
+    # Create file in memory
+    output = io.BytesIO()
+    
+    if format.lower() == "csv":
+        df.to_csv(output, index=False)
+        media_type = "text/csv"
+        filename = f"pipecheck_all_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    elif format.lower() == "excel":
+        df.to_excel(output, index=False, engine='openpyxl')
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"pipecheck_all_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported format. Use 'csv' or 'excel'")
+    
+    output.seek(0)
+    
+    return StreamingResponse(
+        io.BytesIO(output.read()),
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )

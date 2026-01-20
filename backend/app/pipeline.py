@@ -21,8 +21,15 @@ class CSVProcessor:
         
     async def process_csv(self, file_path: str, run_id: str) -> Dict[str, int]:
         try:
-            df = pd.read_csv(file_path)
-            logger.info("CSV loaded", rows=len(df), columns=list(df.columns))
+            # Determine file type and read accordingly
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            elif file_path.endswith(('.xlsx', '.xls', '.xlsm')):
+                df = pd.read_excel(file_path)
+            else:
+                raise ValueError("Unsupported file format")
+            
+            logger.info("File loaded", rows=len(df), columns=list(df.columns))
             
             results = {
                 "total_rows": len(df),

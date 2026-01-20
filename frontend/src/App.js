@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard } from 'lucide-react';
+import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download } from 'lucide-react';
 import axios from 'axios';
 import './App.css';
 
@@ -10,7 +10,7 @@ function App() {
   const [selectedRun, setSelectedRun] = useState(null);
   const [errors, setErrors] = useState([]);
   const [dragActive, setDragActive] = useState(false);
-  const [uiSize, setUiSize] = useState('normal'); // small, normal, large
+  const [uiScale, setUiScale] = useState(1); // 0.75, 0.875, 1, 1.125, 1.25, 1.375
   const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
   const [csvText, setCsvText] = useState('');
   const [csvUrl, setCsvUrl] = useState('');
@@ -46,7 +46,7 @@ function App() {
 
     document.addEventListener('paste', handlePaste);
     return () => document.removeEventListener('paste', handlePaste);
-  }, [uploadMethod]);
+  }, [uploadMethod, uiScale]);
 
   const fetchRuns = async () => {
     try {
@@ -180,6 +180,46 @@ function App() {
     }
   };
 
+  const handleExport = async (runId, format = 'csv') => {
+    try {
+      const response = await axios.get(`http://localhost:8000/export/${runId}?format=${format}`, {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', response.headers['content-disposition']?.split('filename=')[1]?.replace(/"/g, '') || `export.${format}`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Export error:', error);
+      alert('Export failed: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  const handleExportAll = async (format = 'csv') => {
+    try {
+      const response = await axios.get(`http://localhost:8000/export/all?format=${format}`, {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', response.headers['content-disposition']?.split('filename=')[1]?.replace(/"/g, '') || `all_export.${format}`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Export error:', error);
+      alert('Export failed: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
   const getStatusIcon = (status) => {
     switch (status) {
       case 'pending':
@@ -203,44 +243,19 @@ function App() {
   };
 
   const getSizeClasses = () => {
-    switch (uiSize) {
-      case 'small':
-        return {
-          container: 'text-xs',
-          header: 'text-2xl',
-          card: 'p-4',
-          statCard: 'p-4',
-          statValue: 'text-xl',
-          table: 'text-xs',
-          button: 'px-2 py-1 text-xs',
-          icon: 'w-3 h-3',
-          title: 'text-lg'
-        };
-      case 'large':
-        return {
-          container: 'text-lg',
-          header: 'text-5xl',
-          card: 'p-8',
-          statCard: 'p-8',
-          statValue: 'text-4xl',
-          table: 'text-base',
-          button: 'px-6 py-3 text-base',
-          icon: 'w-6 h-6',
-          title: 'text-2xl'
-        };
-      default: // normal
-        return {
-          container: 'text-base',
-          header: 'text-3xl',
-          card: 'p-6',
-          statCard: 'p-6',
-          statValue: 'text-2xl',
-          table: 'text-sm',
-          button: 'px-2.5 py-0.5 text-xs',
-          icon: 'w-4 h-4',
-          title: 'text-xl'
-        };
-    }
+    const scale = uiScale;
+    
+    return {
+      container: scale <= 0.875 ? 'text-sm' : scale >= 1.125 ? 'text-lg' : 'text-base',
+      header: `text-${Math.round(3 * scale)}xl`, // Scales from 2xl to 4xl
+      card: `p-${Math.round(6 * scale)}`, // Scales from 4 to 8
+      statCard: `p-${Math.round(6 * scale)}`, // Scales from 4 to 8
+      statValue: `text-${Math.round(2 * scale)}xl`, // Scales from xl to 3xl
+      table: scale <= 0.875 ? 'text-xs' : scale >= 1.125 ? 'text-base' : 'text-sm',
+      button: `px-${Math.round(2.5 * scale)} py-${Math.round(0.5 * scale)} text-xs`,
+      icon: `w-${Math.round(4 * scale)} h-${Math.round(4 * scale)}`, // Scales from 3 to 6
+      title: `text-${Math.round(1.25 * scale)}xl` // Scales from lg to 2xl
+    };
   };
 
   const sizeClasses = getSizeClasses();
@@ -252,19 +267,20 @@ function App() {
                       status === 'failed' ? 'status-failed' :
                       'status-skipped';
     
-    const sizeClass = uiSize === 'small' ? 'status-badge-small' :
-                      uiSize === 'large' ? 'status-badge-large' :
+    const sizeClass = uiScale <= 0.875 ? 'status-badge-small' :
+                      uiScale >= 1.125 ? 'status-badge-large' :
                       'status-badge';
     
     return `${baseClass} ${sizeClass}`;
   };
 
   return (
-    <div className={`min-h-screen bg-gray-50 ${sizeClasses.container}`}>
-      <div className="container mx-auto px-4 py-8">
+    <div className={`min-h-screen bg-gray-50 ${sizeClasses.container} flex flex-col`}>
+      <div className="flex-grow">
+        <div className="container mx-auto px-4 py-8">
         <header className="mb-8 flex justify-between items-start">
           <div className="flex items-center">
-            <img src="/fav-lg.png" alt="PipeCheck Logo" className={`${uiSize === 'small' ? 'w-8 h-8' : uiSize === 'large' ? 'w-12 h-12' : 'w-10 h-10'} mr-3`} />
+            <img src="/fav-lg.png" alt="PipeCheck Logo" className={`${uiScale <= 0.875 ? 'w-8 h-8' : uiScale >= 1.125 ? 'w-12 h-12' : 'w-10 h-10'} mr-3`} />
             <div>
               <h1 className={`${sizeClasses.header} font-bold text-gray-900 mb-2`}>PipeCheck</h1>
               <p className="text-gray-600">Ops-grade CSV ingestion pipeline with deduplication and idempotency</p>
@@ -272,26 +288,36 @@ function App() {
           </div>
           <div className="flex items-center space-x-1 bg-white rounded-lg shadow p-1">
             <button
-              onClick={() => setUiSize('small')}
-              className={`p-1 rounded ${uiSize === 'small' ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
-              title="Small UI"
+              onClick={() => setUiScale(0.75)}
+              className={`p-1 rounded ${uiScale === 0.75 ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
+              title="75% - Smallest"
             >
               <ZoomOut className="w-3 h-3" />
             </button>
+            <div className="flex items-center px-2">
+              <input
+                type="range"
+                min="0.75"
+                max="1.375"
+                step="0.125"
+                value={uiScale}
+                onChange={(e) => setUiScale(parseFloat(e.target.value))}
+                className="w-20 h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #3B82F6 0%, #3B82F6 ${((uiScale - 0.75) / 0.625) * 100}%, #E5E7EB ${((uiScale - 0.75) / 0.625) * 100}%, #E5E7EB 100%)`
+                }}
+              />
+            </div>
             <button
-              onClick={() => setUiSize('normal')}
-              className={`p-1 rounded ${uiSize === 'normal' ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
-              title="Normal UI"
-            >
-              <span className="text-xs font-medium">A</span>
-            </button>
-            <button
-              onClick={() => setUiSize('large')}
-              className={`p-1 rounded ${uiSize === 'large' ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
-              title="Large UI"
+              onClick={() => setUiScale(1.375)}
+              className={`p-1 rounded ${uiScale === 1.375 ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
+              title="137.5% - Largest"
             >
               <ZoomIn className="w-3 h-3" />
             </button>
+            <span className="text-xs text-gray-500 ml-1 font-mono">
+              {Math.round(uiScale * 100)}%
+            </span>
           </div>
         </header>
 
@@ -299,7 +325,7 @@ function App() {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
             <div className={`bg-white rounded-lg shadow ${sizeClasses.statCard}`}>
               <div className="flex items-center">
-                <Activity className={`${uiSize === 'small' ? 'w-6 h-6' : uiSize === 'large' ? 'w-10 h-10' : 'w-8 h-8'} text-blue-500 mr-3`} />
+                <Activity className={`${uiScale <= 0.875 ? 'w-6 h-6' : uiScale >= 1.125 ? 'w-10 h-10' : 'w-8 h-8'} text-blue-500 mr-3`} />
                 <div>
                   <p className="text-gray-600">Total Runs</p>
                   <p className={`${sizeClasses.statValue} font-bold`}>{stats.total_runs}</p>
@@ -309,7 +335,7 @@ function App() {
             
             <div className={`bg-white rounded-lg shadow ${sizeClasses.statCard}`}>
               <div className="flex items-center">
-                <CheckCircle className={`${uiSize === 'small' ? 'w-6 h-6' : uiSize === 'large' ? 'w-10 h-10' : 'w-8 h-8'} text-green-500 mr-3`} />
+                <CheckCircle className={`${uiScale <= 0.875 ? 'w-6 h-6' : uiScale >= 1.125 ? 'w-10 h-10' : 'w-8 h-8'} text-green-500 mr-3`} />
                 <div>
                   <p className="text-gray-600">Success Rate</p>
                   <p className={`${sizeClasses.statValue} font-bold`}>{stats.success_rate.toFixed(1)}%</p>
@@ -319,7 +345,7 @@ function App() {
             
             <div className={`bg-white rounded-lg shadow ${sizeClasses.statCard}`}>
               <div className="flex items-center">
-                <FileText className={`${uiSize === 'small' ? 'w-6 h-6' : uiSize === 'large' ? 'w-10 h-10' : 'w-8 h-8'} text-purple-500 mr-3`} />
+                <FileText className={`${uiScale <= 0.875 ? 'w-6 h-6' : uiScale >= 1.125 ? 'w-10 h-10' : 'w-8 h-8'} text-purple-500 mr-3`} />
                 <div>
                   <p className="text-gray-600">Rows Processed</p>
                   <p className={`${sizeClasses.statValue} font-bold`}>{stats.total_rows_processed.toLocaleString()}</p>
@@ -384,7 +410,7 @@ function App() {
                 {uploadMethod === 'file' && (
                   <div>
                     <div
-                      className={`relative border-2 border-dashed rounded-lg ${uiSize === 'small' ? 'p-4' : uiSize === 'large' ? 'p-12' : 'p-8'} text-center transition-colors ${
+                      className={`relative border-2 border-dashed rounded-lg p-${Math.round(8 * uiScale)} text-center transition-colors ${
                         dragActive ? 'border-blue-400 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
                       } ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                       onDragEnter={handleDrag}
@@ -394,16 +420,16 @@ function App() {
                     >
                       <input
                         type="file"
-                        accept=".csv"
+                        accept=".csv,.xlsx,.xls,.xlsm"
                         onChange={(e) => e.target.files && handleFileUpload(e.target.files[0])}
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                         disabled={uploading}
                       />
-                      <Upload className={`${uiSize === 'small' ? 'w-8 h-8' : uiSize === 'large' ? 'w-16 h-16' : 'w-12 h-12'} text-gray-400 mx-auto mb-4`} />
-                      <p className={`${uiSize === 'small' ? 'text-sm' : uiSize === 'large' ? 'text-xl' : 'text-lg'} font-medium text-gray-700`}>
-                        {uploading ? 'Uploading...' : 'Drop CSV file here or click to browse'}
+                      <Upload className={`${uiScale <= 0.875 ? 'w-8 h-8' : uiScale >= 1.125 ? 'w-16 h-16' : 'w-12 h-12'} text-gray-400 mx-auto mb-4`} />
+                      <p className={`${uiScale <= 0.875 ? 'text-sm' : uiScale >= 1.125 ? 'text-xl' : 'text-lg'} font-medium text-gray-700`}>
+                        {uploading ? 'Uploading...' : 'Drop CSV or Excel file here or click to browse'}
                       </p>
-                      <p className={`${sizeClasses.container} text-gray-500 mt-2`}>You can also paste a CSV file from clipboard (Ctrl+V / Cmd+V)</p>
+                      <p className={`${sizeClasses.container} text-gray-500 mt-2`}>Supports CSV, Excel (.xlsx, .xls), Google Sheets, and more with email, name, and optional fields</p>
                     </div>
                     
                     {/* URL Input */}
@@ -461,7 +487,25 @@ Jane Smith,jane@example.com,555-5678"
 
             <div className="bg-white rounded-lg shadow">
               <div className={`${sizeClasses.card}`}>
-                <h2 className={`${sizeClasses.title} font-semibold mb-4`}>Recent Runs</h2>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className={`${sizeClasses.title} font-semibold`}>Recent Runs</h2>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleExportAll('csv')}
+                      className="flex items-center px-3 py-1 text-sm bg-green-500 text-white rounded hover:bg-green-600"
+                    >
+                      <Download className="w-3 h-3 mr-1" />
+                      Export All (CSV)
+                    </button>
+                    <button
+                      onClick={() => handleExportAll('excel')}
+                      className="flex items-center px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                    >
+                      <Download className="w-3 h-3 mr-1" />
+                      Export All (Excel)
+                    </button>
+                  </div>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full">
                     <thead>
@@ -541,25 +585,47 @@ Jane Smith,jane@example.com,555-5678"
                     <hr />
                     <div className="grid grid-cols-2 gap-4">
                       <div className="text-center">
-                        <p className={`${uiSize === 'small' ? 'text-lg' : uiSize === 'large' ? 'text-3xl' : 'text-2xl'} font-bold`}>{selectedRun.total_rows.toLocaleString()}</p>
+                        <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold`}>{selectedRun.total_rows.toLocaleString()}</p>
                         <p className={`${sizeClasses.table} text-gray-600`}>Total Rows</p>
                       </div>
                       <div className="text-center">
-                        <p className={`${uiSize === 'small' ? 'text-lg' : uiSize === 'large' ? 'text-3xl' : 'text-2xl'} font-bold text-green-600`}>{selectedRun.rows_inserted.toLocaleString()}</p>
+                        <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold text-green-600`}>{selectedRun.rows_inserted.toLocaleString()}</p>
                         <p className={`${sizeClasses.table} text-gray-600`}>Inserted</p>
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="text-center">
-                        <p className={`${uiSize === 'small' ? 'text-lg' : uiSize === 'large' ? 'text-3xl' : 'text-2xl'} font-bold text-blue-600`}>{selectedRun.rows_updated.toLocaleString()}</p>
+                        <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold text-blue-600`}>{selectedRun.rows_updated.toLocaleString()}</p>
                         <p className={`${sizeClasses.table} text-gray-600`}>Updated</p>
                       </div>
                       <div className="text-center">
-                        <p className={`${uiSize === 'small' ? 'text-lg' : uiSize === 'large' ? 'text-3xl' : 'text-2xl'} font-bold text-gray-600`}>{selectedRun.rows_skipped.toLocaleString()}</p>
+                        <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold text-gray-600`}>{selectedRun.rows_skipped.toLocaleString()}</p>
                         <p className={`${sizeClasses.table} text-gray-600`}>Skipped</p>
                       </div>
                     </div>
                   </div>
+                  
+                  {selectedRun.status === 'completed' && (
+                    <div className="mt-4 pt-4 border-t">
+                      <h3 className="text-sm font-medium text-gray-700 mb-2">Export Data</h3>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleExport(selectedRun.run_id, 'csv')}
+                          className="flex-1 flex items-center justify-center px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600"
+                        >
+                          <Download className="w-3 h-3 mr-1" />
+                          CSV
+                        </button>
+                        <button
+                          onClick={() => handleExport(selectedRun.run_id, 'excel')}
+                          className="flex-1 flex items-center justify-center px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                        >
+                          <Download className="w-3 h-3 mr-1" />
+                          Excel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -571,7 +637,7 @@ Jane Smith,jane@example.com,555-5678"
                     <AlertCircle className={`${sizeClasses.icon} text-red-500 mr-2`} />
                     Errors ({errors.length})
                   </h2>
-                  <div className={`space-y-2 ${uiSize === 'small' ? 'max-h-64' : uiSize === 'large' ? 'max-h-96' : 'max-h-80'} overflow-y-auto`}>
+                  <div className={`space-y-2 max-h-${Math.round(80 * uiScale)} overflow-y-auto`}>
                     {errors.map((error) => (
                       <div key={error.id} className="border-l-4 border-red-400 pl-4 py-2">
                         <div className="flex justify-between items-start">
@@ -590,6 +656,48 @@ Jane Smith,jane@example.com,555-5678"
           </div>
         </div>
       </div>
+      </div>
+      
+      {/* Footer */}
+      <footer className="border-t border-gray-200 mt-auto">
+        <div className="container mx-auto px-4 py-4">
+          <div className="flex justify-between items-center text-sm">
+            <div className="text-gray-500">
+              © {new Date().getFullYear()}{' '}
+              <a href="https://pipecheck.dev" className="hover:text-gray-700 transition-colors">
+                PipeCheck
+              </a>
+              {' • '}
+              <a href="/privacy" className="hover:text-gray-700 transition-colors">
+                Privacy
+              </a>
+              {' • '}
+              <a href="/terms" className="hover:text-gray-700 transition-colors">
+                Terms
+              </a>
+              {' • '}
+              <a href="/docs" className="hover:text-gray-700 transition-colors">
+                Docs
+              </a>
+            </div>
+            <div className="flex items-center text-gray-500">
+              <a 
+                href="https://x.com/jeremyboulerice" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="hover:text-gray-700 transition-colors"
+                title="Follow on X"
+                style={{ marginRight: '8px' }}
+              >
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+              </a>
+              <span className="mr-2">A Jeremy Boulerice Production</span>
+            </div>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
