@@ -8,6 +8,7 @@ from typing import Dict, List, Any, Tuple, Optional, Union
 import structlog
 from sqlalchemy.orm import Session
 from .models import DataRow, ErrorLog, IngestRun
+from .ai_fixer import ai_fixer
 
 logger = structlog.get_logger()
 
@@ -262,12 +263,35 @@ class CSVProcessor:
         return results
     
     async def process_row(self, row: pd.Series, row_index: int, run_id: str) -> str:
-        """Process individual row with auto-fix and enhanced validation"""
+        """Process individual row with auto-fix, AI-fix, and enhanced validation"""
         # First try to auto-fix the row
         fixed_data, fixes_applied = await self.auto_fix_row(row, row_index, run_id)
         
-        # Then validate the fixed data
-        validated_data = await self.validate_row_lenient(fixed_data, row_index)
+        # Try to validate - if it fails, attempt AI fix
+        try:
+            validated_data = await self.validate_row_lenient(fixed_data, row_index)
+        except ValidationError as e:
+            # Auto-fix failed, try AI fix
+            if ai_fixer.enabled:
+                logger.info("Attempting AI fix", run_id=run_id, row_index=row_index, error=str(e))
+                ai_fixed_data, ai_fixes = await ai_fixer.fix_row(
+                    fixed_data, 
+                    str(e), 
+                    list(row.index)
+                )
+                fixes_applied.extend(ai_fixes)
+                
+                # Try validation again with AI-fixed data
+                try:
+                    validated_data = await self.validate_row_lenient(ai_fixed_data, row_index)
+                    fixed_data = ai_fixed_data
+                    logger.info("AI fix successful", run_id=run_id, row_index=row_index, fixes=ai_fixes)
+                except ValidationError as e2:
+                    # AI fix also failed, re-raise original error
+                    raise e
+            else:
+                raise e
+        
         normalized_data = await self.normalize_data(validated_data)
         row_hash = self.generate_row_hash(normalized_data)
         
