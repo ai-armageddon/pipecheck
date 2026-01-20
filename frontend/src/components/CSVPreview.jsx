@@ -101,7 +101,14 @@ const CSVPreview = ({ data, errors = [], filename }) => {
       {/* Header */}
       <div className="border-b border-gray-200 p-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-gray-900">CSV Preview</h3>
+          <div className="flex items-center">
+            <h3 className="text-lg font-semibold text-gray-900">CSV Preview</h3>
+            {filename && (
+              <span className="ml-3 px-2 py-1 text-sm bg-gray-100 text-gray-600 rounded">
+                {filename}
+              </span>
+            )}
+          </div>
           <button
             onClick={() => downloadCSV(displayData, `-${activeTab}`)}
             className="flex items-center px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600"

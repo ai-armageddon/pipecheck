@@ -1192,39 +1192,39 @@ Jane Smith,jane@example.com,555-5678"
                   <table className="w-full">
                     <thead>
                       <tr className="border-b">
-                        <th className="text-left py-2">Status</th>
-                        <th className="text-left py-2">Filename</th>
-                        <th className="text-left py-2">Created</th>
-                        <th className="text-right py-2">Rows</th>
-                        <th className="text-right py-2">Inserted</th>
-                        <th className="text-right py-2">Updated</th>
-                        <th className="text-right py-2">Errors</th>
-                        <th className="text-center py-2">Progress</th>
-                        <th className="text-center py-2">Actions</th>
+                        <th className="text-left py-2 px-3">Status</th>
+                        <th className="text-left py-2 px-3">Filename</th>
+                        <th className="text-left py-2 px-3">Created</th>
+                        <th className="text-right py-2 px-3">Rows</th>
+                        <th className="text-right py-2 px-3">Inserted</th>
+                        <th className="text-right py-2 px-3">Updated</th>
+                        <th className="text-right py-2 px-3">Errors</th>
+                        <th className="text-center py-2 px-3">Progress</th>
+                        <th className="text-center py-2 px-3">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {runs.map((run) => (
                         <tr
                           key={run.run_id}
-                          className="border-b hover:bg-gray-50 cursor-pointer"
+                          className={`border-b hover:bg-gray-50 cursor-pointer transition-colors ${selectedRun?.run_id === run.run_id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}`}
                           onClick={() => {
                             setSelectedRun(run);
                             fetchErrors(run.run_id);
                           }}
                         >
-                          <td className="py-3">
+                          <td className="py-3 px-3">
                             <span className={getStatusBadgeClass(run.status)}>
                               {getStatusIcon(run.status)}
                               <span className="ml-1 capitalize">{run.status}</span>
                             </span>
                           </td>
-                          <td className={`${sizeClasses.table}`}>{run.filename}</td>
-                          <td className={`${sizeClasses.table} text-gray-600`}>{formatDate(run.created_at)}</td>
-                          <td className={`${sizeClasses.table} text-right`}>{run.total_rows.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} text-right text-green-600`}>{run.rows_inserted.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} text-right text-blue-600`}>{run.rows_updated.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} text-right text-red-600`}>{run.errors_count}</td>
+                          <td className={`${sizeClasses.table} px-3`}>{run.filename}</td>
+                          <td className={`${sizeClasses.table} px-3 text-gray-600`}>{formatDate(run.created_at)}</td>
+                          <td className={`${sizeClasses.table} px-3 text-right`}>{run.total_rows.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-3 text-right text-green-600`}>{run.rows_inserted.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-3 text-right text-blue-600`}>{run.rows_updated.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-3 text-right text-red-600`}>{run.errors_count}</td>
                           <td className={`${sizeClasses.table} text-center`}>
                             {run.status === 'processing' ? (
                               <div className="flex items-center justify-center">
