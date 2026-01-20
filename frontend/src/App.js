@@ -248,8 +248,8 @@ function App() {
     return {
       container: scale <= 0.875 ? 'text-sm' : scale >= 1.125 ? 'text-lg' : 'text-base',
       header: `text-${Math.round(3 * scale)}xl`, // Scales from 2xl to 4xl
-      card: `p-${Math.round(6 * scale)}`, // Scales from 4 to 8
-      statCard: `p-${Math.round(6 * scale)}`, // Scales from 4 to 8
+      card: scale <= 0.875 ? 'p-4' : scale >= 1.125 ? 'p-8' : 'p-6', // Fixed padding classes
+      statCard: scale <= 0.875 ? 'p-4' : scale >= 1.125 ? 'p-8' : 'p-6', // Fixed padding classes
       statValue: `text-${Math.round(2 * scale)}xl`, // Scales from xl to 3xl
       table: scale <= 0.875 ? 'text-xs' : scale >= 1.125 ? 'text-base' : 'text-sm',
       button: `px-${Math.round(2.5 * scale)} py-${Math.round(0.5 * scale)} text-xs`,
@@ -275,9 +275,8 @@ function App() {
   };
 
   return (
-    <div className={`min-h-screen bg-gray-50 ${sizeClasses.container} flex flex-col`}>
-      <div className="flex-grow">
-        <div className="container mx-auto px-4 py-8">
+    <div className={`min-h-screen bg-gray-50 ${sizeClasses.container}`}>
+      <div className="container mx-auto px-4 py-8">
         <header className="mb-8 flex justify-between items-start">
           <div className="flex items-center">
             <img src="/fav-lg.png" alt="PipeCheck Logo" className={`${uiScale <= 0.875 ? 'w-8 h-8' : uiScale >= 1.125 ? 'w-12 h-12' : 'w-10 h-10'} mr-3`} />
@@ -410,9 +409,11 @@ function App() {
                 {uploadMethod === 'file' && (
                   <div>
                     <div
-                      className={`relative border-2 border-dashed rounded-lg p-${Math.round(8 * uiScale)} text-center transition-colors ${
+                      className={`relative border-2 border-dashed rounded-lg text-center transition-colors ${
                         dragActive ? 'border-blue-400 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
-                      } ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                      } ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} ${
+                        uiScale <= 0.875 ? 'p-4' : uiScale >= 1.125 ? 'p-12' : 'p-8'
+                      }`}
                       onDragEnter={handleDrag}
                       onDragLeave={handleDrag}
                       onDragOver={handleDrag}
@@ -429,7 +430,7 @@ function App() {
                       <p className={`${uiScale <= 0.875 ? 'text-sm' : uiScale >= 1.125 ? 'text-xl' : 'text-lg'} font-medium text-gray-700`}>
                         {uploading ? 'Uploading...' : 'Drop CSV or Excel file here or click to browse'}
                       </p>
-                      <p className={`${sizeClasses.container} text-gray-500 mt-2`}>Supports CSV, Excel (.xlsx, .xls), Google Sheets, and more with email, name, and optional fields</p>
+                      <p className={`${sizeClasses.container} text-gray-500 mt-2`}>Supports CSV, Excel (.xlsx, .xls) files with email, name, and optional fields</p>
                     </div>
                     
                     {/* URL Input */}
@@ -637,7 +638,9 @@ Jane Smith,jane@example.com,555-5678"
                     <AlertCircle className={`${sizeClasses.icon} text-red-500 mr-2`} />
                     Errors ({errors.length})
                   </h2>
-                  <div className={`space-y-2 max-h-${Math.round(80 * uiScale)} overflow-y-auto`}>
+                  <div className={`space-y-2 overflow-y-auto ${
+                    uiScale <= 0.875 ? 'max-h-64' : uiScale >= 1.125 ? 'max-h-96' : 'max-h-80'
+                  }`}>
                     {errors.map((error) => (
                       <div key={error.id} className="border-l-4 border-red-400 pl-4 py-2">
                         <div className="flex justify-between items-start">
@@ -656,48 +659,6 @@ Jane Smith,jane@example.com,555-5678"
           </div>
         </div>
       </div>
-      </div>
-      
-      {/* Footer */}
-      <footer className="border-t border-gray-200 mt-auto">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex justify-between items-center text-sm">
-            <div className="text-gray-500">
-              © {new Date().getFullYear()}{' '}
-              <a href="https://pipecheck.dev" className="hover:text-gray-700 transition-colors">
-                PipeCheck
-              </a>
-              {' • '}
-              <a href="/privacy" className="hover:text-gray-700 transition-colors">
-                Privacy
-              </a>
-              {' • '}
-              <a href="/terms" className="hover:text-gray-700 transition-colors">
-                Terms
-              </a>
-              {' • '}
-              <a href="/docs" className="hover:text-gray-700 transition-colors">
-                Docs
-              </a>
-            </div>
-            <div className="flex items-center text-gray-500">
-              <a 
-                href="https://x.com/jeremyboulerice" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="hover:text-gray-700 transition-colors"
-                title="Follow on X"
-                style={{ marginRight: '8px' }}
-              >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-                </svg>
-              </a>
-              <span className="mr-2">A Jeremy Boulerice Production</span>
-            </div>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }
