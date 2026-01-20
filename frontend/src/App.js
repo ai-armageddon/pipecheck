@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2 } from 'lucide-react';
 import axios from 'axios';
+import { Toaster, toast } from 'sonner';
 import './App.css';
 
 function App() {
@@ -80,7 +81,7 @@ function App() {
 
   const handleFileUpload = async (file) => {
     if (!file || !(file.name.endsWith('.csv') || file.name.endsWith(('.xlsx', '.xls', '.xlsm')))) {
-      alert('Please upload a CSV or Excel file');
+      toast.error('Please upload a CSV or Excel file');
       return;
     }
 
@@ -99,13 +100,15 @@ function App() {
       await fetchStats();
       
       if (response.data.status === 'skipped') {
-        alert('File already processed. Skipping duplicate.');
+        toast.info('File already processed. Skipping duplicate.');
+      } else if (response.data.status === 'pending') {
+        toast.success('File uploaded successfully and is being processed.');
       } else {
-        alert('File uploaded successfully! Processing started.');
+        toast.success('File uploaded successfully.');
       }
     } catch (error) {
       console.error('Upload error:', error);
-      alert('Upload failed: ' + (error.response?.data?.detail || error.message));
+      toast.error('Upload failed: ' + (error.response?.data?.detail || error.message));
     } finally {
       setUploading(false);
     }
@@ -133,7 +136,7 @@ function App() {
 
   const handlePasteUpload = async () => {
     if (!csvText.trim()) {
-      alert('Please paste CSV content first');
+      toast.error('Please paste CSV content first');
       return;
     }
 
@@ -145,7 +148,7 @@ function App() {
       setCsvText('');
     } catch (error) {
       console.error('Paste upload error:', error);
-      alert('Upload failed: ' + (error.response?.data?.detail || error.message));
+      toast.error('Upload failed: ' + (error.response?.data?.detail || error.message));
     } finally {
       setUploading(false);
     }
@@ -153,7 +156,7 @@ function App() {
 
   const handleUrlUpload = async () => {
     if (!csvUrl.trim()) {
-      alert('Please enter a URL first');
+      toast.error('Please enter a URL first');
       return;
     }
 
@@ -174,7 +177,7 @@ function App() {
       setCsvUrl('');
     } catch (error) {
       console.error('URL upload error:', error);
-      alert('Upload failed: ' + error.message);
+      toast.error('Upload failed: ' + error.message);
     } finally {
       setUploading(false);
     }
@@ -196,7 +199,7 @@ function App() {
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Export error:', error);
-      alert('Export failed: ' + (error.response?.data?.detail || error.message));
+      toast.error('Export failed: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -216,7 +219,7 @@ function App() {
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Error export failed:', error);
-      alert('Error export failed: ' + (error.response?.data?.detail || error.message));
+      toast.error('Error export failed: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -236,7 +239,7 @@ function App() {
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Export error:', error);
-      alert('Export failed: ' + (error.response?.data?.detail || error.message));
+      toast.error('Export failed: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -258,10 +261,10 @@ function App() {
         setErrors([]);
       }
       
-      alert('Run deleted successfully');
+      toast.success('Run deleted successfully');
     } catch (error) {
       console.error('Delete error:', error);
-      alert('Delete failed: ' + (error.response?.data?.detail || error.message));
+      toast.error('Delete failed: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -279,10 +282,10 @@ function App() {
       setErrors([]);
       await fetchStats();
       
-      alert('All runs deleted successfully');
+      toast.success('All runs deleted successfully');
     } catch (error) {
       console.error('Delete all error:', error);
-      alert('Delete failed: ' + (error.response?.data?.detail || error.message));
+      toast.error('Delete failed: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -343,6 +346,12 @@ function App() {
 
   return (
     <div className={`min-h-screen bg-gray-50 ${sizeClasses.container}`}>
+      <Toaster 
+        position="top-right"
+        expand={false}
+        richColors
+        closeButton
+      />
       <div className="container mx-auto px-4 py-8">
         <header className="mb-8 flex justify-between items-start">
           <div className="flex items-center">
