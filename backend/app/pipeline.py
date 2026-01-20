@@ -272,6 +272,7 @@ class CSVProcessor:
             validated_data = await self.validate_row_lenient(fixed_data, row_index)
         except ValidationError as e:
             # Auto-fix failed, try AI fix
+            logger.info("Validation failed, checking AI fixer", run_id=run_id, row_index=row_index, error=str(e), ai_enabled=ai_fixer.enabled)
             if ai_fixer.enabled:
                 logger.info("Attempting AI fix", run_id=run_id, row_index=row_index, error=str(e))
                 ai_fixed_data, ai_fixes = await ai_fixer.fix_row(
@@ -279,6 +280,7 @@ class CSVProcessor:
                     str(e), 
                     list(row.index)
                 )
+                logger.info("AI fix returned", run_id=run_id, row_index=row_index, fixes=ai_fixes, fixed_email=ai_fixed_data.get('email'))
                 fixes_applied.extend(ai_fixes)
                 
                 # Try validation again with AI-fixed data
@@ -288,8 +290,10 @@ class CSVProcessor:
                     logger.info("AI fix successful", run_id=run_id, row_index=row_index, fixes=ai_fixes)
                 except ValidationError as e2:
                     # AI fix also failed, re-raise original error
+                    logger.warning("AI fix validation failed", run_id=run_id, row_index=row_index, error=str(e2))
                     raise e
             else:
+                logger.warning("AI fixer not enabled", run_id=run_id, row_index=row_index)
                 raise e
         
         normalized_data = await self.normalize_data(validated_data)
