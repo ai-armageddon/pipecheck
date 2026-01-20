@@ -185,7 +185,7 @@ function App() {
       setUploadedFileContent(cached.content);
       setUploadedFileName(cached.filename);
     }
-  }, [selectedRun?.run_id]);
+  }, [selectedRun?.run_id, filePreviewCache]);
 
   // Connect to run-specific WebSocket when uploading
   useEffect(() => {
@@ -268,9 +268,18 @@ function App() {
     try {
       const response = await axios.get('http://localhost:8001/runs');
       setRuns(response.data);
-      if (response.data.length > 0 && !selectedRun) {
-        setSelectedRun(response.data[0]);
-      }
+      // Only auto-select first run on initial load, not on polling
+      setSelectedRun(prev => {
+        if (!prev && response.data.length > 0) {
+          return response.data[0];
+        }
+        // Keep current selection, but update with fresh data if it exists
+        if (prev) {
+          const updated = response.data.find(r => r.run_id === prev.run_id);
+          return updated || prev;
+        }
+        return prev;
+      });
     } catch (error) {
       console.error('Error fetching runs:', error);
     }
@@ -291,6 +300,18 @@ function App() {
       setErrors(response.data);
     } catch (error) {
       console.error('Error fetching errors:', error);
+    }
+  };
+
+  const [processedData, setProcessedData] = useState(null);
+
+  const fetchProcessedData = async (runId) => {
+    try {
+      const response = await axios.get(`http://localhost:8001/runs/${runId}/data`);
+      setProcessedData(response.data);
+    } catch (error) {
+      console.error('Error fetching processed data:', error);
+      setProcessedData(null);
     }
   };
 
@@ -1255,6 +1276,7 @@ Jane Smith,jane@example.com,555-5678"
                           onClick={() => {
                             setSelectedRun(run);
                             fetchErrors(run.run_id);
+                            fetchProcessedData(run.run_id);
                           }}
                         >
                           <td className="py-2 px-2">
@@ -1454,6 +1476,7 @@ Jane Smith,jane@example.com,555-5678"
               data={uploadedFileContent} 
               errors={errors}
               filename={uploadedFileName}
+              processedData={processedData}
             />
           </div>
         )}

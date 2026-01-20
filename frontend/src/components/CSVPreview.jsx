@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { FileText, CheckCircle, AlertCircle, Eye, EyeOff, Download } from 'lucide-react';
+import { FileText, CheckCircle, AlertCircle, Eye, EyeOff, Download, Sparkles } from 'lucide-react';
 import {
   Pagination,
   PaginationContent,
@@ -10,7 +10,7 @@ import {
   PaginationEllipsis,
 } from './ui/pagination';
 
-const CSVPreview = ({ data, errors = [], filename }) => {
+const CSVPreview = ({ data, errors = [], filename, processedData }) => {
   const [activeTab, setActiveTab] = useState('original');
   const [showHeaders, setShowHeaders] = useState(true);
   const [rowsPerPage, setRowsPerPage] = useState(10);
@@ -31,19 +31,26 @@ const CSVPreview = ({ data, errors = [], filename }) => {
     return { headers, rows };
   }, [data]);
 
-  // Create final data (after processing simulation)
+  // Create final data from actual processed data from backend
   const finalData = useMemo(() => {
-    if (!parsedData.rows.length) return parsedData;
+    if (processedData && processedData.data && processedData.data.length > 0) {
+      // Use actual processed data from backend
+      const firstRow = processedData.data[0];
+      const headers = Object.keys(firstRow).filter(k => !k.startsWith('_'));
+      const rows = processedData.data.map(row => {
+        const rowData = headers.map(h => row[h] ?? '');
+        const fixes = row._fixes_applied || [];
+        return { data: rowData, fixes };
+      });
+      return { headers, rows, hasRealData: true };
+    }
     
-    // Simulate processing - remove rows with errors
+    // Fallback: simulate by removing error rows
+    if (!parsedData.rows.length) return { ...parsedData, hasRealData: false };
     const errorRows = new Set(errors.map(e => e.row_index || 0));
     const cleanRows = parsedData.rows.filter((_, index) => !errorRows.has(index));
-    
-    return {
-      ...parsedData,
-      rows: cleanRows
-    };
-  }, [parsedData, errors]);
+    return { ...parsedData, rows: cleanRows, hasRealData: false };
+  }, [parsedData, errors, processedData]);
 
   // Create highlighted data with error indicators
   const highlightedData = useMemo(() => {
@@ -216,7 +223,13 @@ const CSVPreview = ({ data, errors = [], filename }) => {
           <div className="text-gray-500">
             {activeTab === 'final' && (
               <span className="text-green-600">
-                {finalData.rows.length} rows (removed {parsedData.rows.length - finalData.rows.length} errors)
+                {finalData.rows.length} rows
+                {finalData.hasRealData && (
+                  <span className="ml-2 text-purple-600">
+                    <Sparkles className="inline w-3 h-3 mr-1" />
+                    {finalData.rows.filter(r => r.fixes && r.fixes.length > 0).length} AI-fixed
+                  </span>
+                )}
               </span>
             )}
             {activeTab === 'highlighted' && (
@@ -253,11 +266,13 @@ const CSVPreview = ({ data, errors = [], filename }) => {
               const rowData = Array.isArray(row) ? row : row.data;
               const hasError = row.hasError || false;
               const rowErrors = row.errors || [];
+              const hasFixes = row.fixes && row.fixes.length > 0;
               
               return (
                 <tr 
                   key={rowIndex}
-                  className={hasError ? 'bg-red-50' : rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
+                  className={hasError ? 'bg-red-50' : hasFixes ? 'bg-purple-50' : rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
+                  title={hasFixes ? `AI Fixes: ${row.fixes.join(', ')}` : ''}
                 >
                   {rowData.map((cell, cellIndex) => (
                     <td
@@ -269,6 +284,13 @@ const CSVPreview = ({ data, errors = [], filename }) => {
                       {cell || <span className="text-gray-400 italic">NULL</span>}
                     </td>
                   ))}
+                  {hasFixes && (
+                    <td className="px-2 py-4">
+                      <span className="text-purple-600" title={row.fixes.join('\n')}>
+                        <Sparkles className="w-4 h-4" />
+                      </span>
+                    </td>
+                  )}
                 </tr>
               );
             })}

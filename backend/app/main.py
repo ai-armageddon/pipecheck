@@ -393,6 +393,30 @@ async def get_stats():
 async def health_check():
     return {"status": "healthy", "active_runs": len(active_runs)}
 
+@app.get("/runs/{run_id}/data")
+async def get_run_data(run_id: str):
+    """Get processed data for a run as JSON (for preview)"""
+    db = next(get_db())
+    
+    run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    data_rows = db.query(DataRow).filter(DataRow.run_id == run_id).all()
+    
+    # Convert to list of dicts
+    data = []
+    for row in data_rows:
+        normalized_data = json.loads(row.normalized_data)
+        data.append(normalized_data)
+    
+    return {
+        "run_id": run_id,
+        "filename": run.filename,
+        "total_rows": len(data),
+        "data": data
+    }
+
 @app.get("/export/{run_id}")
 async def export_data(run_id: str, format: str = "csv"):
     db = next(get_db())
