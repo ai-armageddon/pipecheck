@@ -344,6 +344,46 @@ function App() {
     }
   };
 
+  const handleMultiFileUpload = async (files) => {
+    const fileArray = Array.from(files);
+    const validFiles = fileArray.filter(file => 
+      file.name.endsWith('.csv') || 
+      file.name.endsWith('.xlsx') || 
+      file.name.endsWith('.xls') || 
+      file.name.endsWith('.xlsm')
+    );
+
+    if (validFiles.length === 0) {
+      toast.error('Please upload CSV or Excel files');
+      return;
+    }
+
+    if (validFiles.length < fileArray.length) {
+      toast.warning(`${fileArray.length - validFiles.length} invalid file(s) skipped`);
+    }
+
+    soundManager.upload();
+    addLog('info', `Starting batch upload: ${validFiles.length} file(s)`);
+
+    // Process files sequentially to avoid overwhelming the server
+    for (let i = 0; i < validFiles.length; i++) {
+      const file = validFiles[i];
+      addLog('info', `Processing file ${i + 1}/${validFiles.length}: ${file.name}`);
+      
+      try {
+        await handleFileUpload(file);
+      } catch (error) {
+        addLog('error', `Failed to upload ${file.name}: ${error.message}`);
+      }
+    }
+
+    if (validFiles.length > 1) {
+      soundManager.uploadComplete();
+      toast.success(`Batch upload complete: ${validFiles.length} files processed`);
+      addLog('info', `Batch upload complete: ${validFiles.length} files processed`);
+    }
+  };
+
   const handleDrag = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -359,8 +399,8 @@ function App() {
     e.stopPropagation();
     setDragActive(false);
     
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileUpload(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleMultiFileUpload(e.dataTransfer.files);
     }
   };
 
@@ -875,15 +915,16 @@ function App() {
                       <input
                         type="file"
                         accept=".csv,.xlsx,.xls,.xlsm"
-                        onChange={(e) => e.target.files && handleFileUpload(e.target.files[0])}
+                        multiple
+                        onChange={(e) => e.target.files && handleMultiFileUpload(e.target.files)}
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                         disabled={uploading}
                       />
                       <Upload className={`${uiScale <= 0.875 ? 'w-8 h-8' : uiScale >= 1.125 ? 'w-16 h-16' : 'w-12 h-12'} text-gray-400 mx-auto mb-4`} />
                       <p className={`${uiScale <= 0.875 ? 'text-sm' : uiScale >= 1.125 ? 'text-xl' : 'text-lg'} font-medium text-gray-700`}>
-                        {uploading ? 'Uploading...' : 'Drop CSV or Excel file here or click to browse'}
+                        {uploading ? 'Uploading...' : 'Drop CSV or Excel files here or click to browse'}
                       </p>
-                      <p className={`${sizeClasses.container} text-gray-500 mt-2`}>Supports CSV, Excel (.xlsx, .xls) files with email, name, and optional fields</p>
+                      <p className={`${sizeClasses.container} text-gray-500 mt-2`}>Supports multiple files • CSV, Excel (.xlsx, .xls) with email and optional fields</p>
                     </div>
                     
                     {/* URL Input */}
