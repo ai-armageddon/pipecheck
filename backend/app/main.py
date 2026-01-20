@@ -167,7 +167,8 @@ async def root():
 @app.post("/upload", response_model=IngestRunResponse)
 async def upload_csv(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    force: bool = Query(False, description="Force upload even if file hash exists")
 ):
     if not (file.filename.endswith('.csv') or 
             file.filename.endswith(('.xlsx', '.xls', '.xlsm'))):
@@ -184,7 +185,7 @@ async def upload_csv(
         IngestRun.file_hash == file_hash
     ).first()
     
-    if existing_run:
+    if existing_run and not force:
         logger.info("Duplicate file detected", run_id=run_id, existing_run_id=existing_run.id)
         return JSONResponse(
             status_code=200,
