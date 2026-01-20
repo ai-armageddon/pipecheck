@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download } from 'lucide-react';
+import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2 } from 'lucide-react';
 import axios from 'axios';
 import './App.css';
 
@@ -237,6 +237,52 @@ function App() {
     } catch (error) {
       console.error('Export error:', error);
       alert('Export failed: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  const handleDeleteRun = async (runId) => {
+    if (!window.confirm('Are you sure you want to delete this run and all its data?')) {
+      return;
+    }
+
+    try {
+      await axios.delete(`http://localhost:8001/runs/${runId}`);
+      
+      // Refresh the runs list
+      await fetchRuns();
+      await fetchStats();
+      
+      // Clear selected run if it was deleted
+      if (selectedRun && selectedRun.run_id === runId) {
+        setSelectedRun(null);
+        setErrors([]);
+      }
+      
+      alert('Run deleted successfully');
+    } catch (error) {
+      console.error('Delete error:', error);
+      alert('Delete failed: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  const handleDeleteAllRuns = async () => {
+    if (!window.confirm('Are you sure you want to delete ALL runs and their data? This cannot be undone!')) {
+      return;
+    }
+
+    try {
+      await axios.delete('http://localhost:8001/runs');
+      
+      // Clear all data
+      setRuns([]);
+      setSelectedRun(null);
+      setErrors([]);
+      await fetchStats();
+      
+      alert('All runs deleted successfully');
+    } catch (error) {
+      console.error('Delete all error:', error);
+      alert('Delete failed: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -513,6 +559,13 @@ Jane Smith,jane@example.com,555-5678"
                   <h2 className={`${sizeClasses.title} font-semibold`}>Recent Runs</h2>
                   <div className="flex gap-2">
                     <button
+                      onClick={handleDeleteAllRuns}
+                      className="flex items-center px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600"
+                    >
+                      <Trash2 className="w-3 h-3 mr-1" />
+                      Delete All
+                    </button>
+                    <button
                       onClick={() => handleExportAll('csv')}
                       className="flex items-center px-3 py-1 text-sm bg-green-500 text-white rounded hover:bg-green-600"
                     >
@@ -539,6 +592,7 @@ Jane Smith,jane@example.com,555-5678"
                         <th className="text-right py-2">Inserted</th>
                         <th className="text-right py-2">Updated</th>
                         <th className="text-right py-2">Errors</th>
+                        <th className="text-center py-2">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -563,6 +617,18 @@ Jane Smith,jane@example.com,555-5678"
                           <td className={`${sizeClasses.table} text-right text-green-600`}>{run.rows_inserted.toLocaleString()}</td>
                           <td className={`${sizeClasses.table} text-right text-blue-600`}>{run.rows_updated.toLocaleString()}</td>
                           <td className={`${sizeClasses.table} text-right text-red-600`}>{run.errors_count}</td>
+                          <td className={`${sizeClasses.table} text-center`}>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteRun(run.run_id);
+                              }}
+                              className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                              title="Delete run"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>

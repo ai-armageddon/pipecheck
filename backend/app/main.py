@@ -431,6 +431,68 @@ async def export_error_report(run_id: str, format: str = "csv"):
     finally:
         db.close()
 
+@app.delete("/runs/{run_id}")
+async def delete_run(run_id: str):
+    """Delete a specific run and all its associated data"""
+    db = next(get_db())
+    
+    try:
+        # Check if run exists
+        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        
+        # Delete associated data rows
+        db.query(DataRow).filter(DataRow.run_id == run_id).delete()
+        
+        # Delete associated error logs
+        db.query(ErrorLog).filter(ErrorLog.run_id == run_id).delete()
+        
+        # Delete the run itself
+        db.delete(run)
+        db.commit()
+        
+        logger.info("Run deleted successfully", run_id=run_id)
+        
+        return {"message": "Run deleted successfully"}
+        
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to delete run", run_id=run_id, error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete run")
+        
+    finally:
+        db.close()
+
+@app.delete("/runs")
+async def delete_all_runs():
+    """Delete all runs and associated data"""
+    db = next(get_db())
+    
+    try:
+        # Delete all data rows
+        db.query(DataRow).delete()
+        
+        # Delete all error logs
+        db.query(ErrorLog).delete()
+        
+        # Delete all runs
+        db.query(IngestRun).delete()
+        
+        db.commit()
+        
+        logger.info("All runs deleted successfully")
+        
+        return {"message": "All runs deleted successfully"}
+        
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to delete all runs", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete all runs")
+        
+    finally:
+        db.close()
+
 def get_db():
     db = SessionLocal()
     try:
