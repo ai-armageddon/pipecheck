@@ -1,10 +1,20 @@
 import React, { useState, useMemo } from 'react';
 import { FileText, CheckCircle, AlertCircle, Eye, EyeOff, Download } from 'lucide-react';
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+  PaginationEllipsis,
+} from './ui/pagination';
 
 const CSVPreview = ({ data, errors = [], filename }) => {
   const [activeTab, setActiveTab] = useState('original');
   const [showHeaders, setShowHeaders] = useState(true);
-  const [maxRows, setMaxRows] = useState(10);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Parse CSV data
   const parsedData = useMemo(() => {
@@ -65,6 +75,36 @@ const CSVPreview = ({ data, errors = [], filename }) => {
         return parsedData;
     }
   }, [activeTab, parsedData, finalData, highlightedData]);
+
+  // Pagination calculations
+  const totalPages = Math.ceil(displayData.rows.length / rowsPerPage);
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const endIndex = startIndex + rowsPerPage;
+  const paginatedRows = displayData.rows.slice(startIndex, endIndex);
+
+  // Reset to page 1 when data or tab changes
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, data]);
+
+  // Generate page numbers with ellipsis
+  const getPageNumbers = () => {
+    const pages = [];
+    const maxVisible = 5;
+    
+    if (totalPages <= maxVisible) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      if (currentPage <= 3) {
+        pages.push(1, 2, 3, 4, '...', totalPages);
+      } else if (currentPage >= totalPages - 2) {
+        pages.push(1, '...', totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
+      } else {
+        pages.push(1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages);
+      }
+    }
+    return pages;
+  };
 
   const downloadCSV = (dataToDownload, suffix = '') => {
     const csvContent = [
@@ -159,15 +199,17 @@ const CSVPreview = ({ data, errors = [], filename }) => {
             </label>
             
             <select
-              value={maxRows}
-              onChange={(e) => setMaxRows(Number(e.target.value))}
+              value={rowsPerPage}
+              onChange={(e) => {
+                setRowsPerPage(Number(e.target.value));
+                setCurrentPage(1);
+              }}
               className="px-2 py-1 border border-gray-300 rounded text-sm"
             >
-              <option value={5}>5 rows</option>
-              <option value={10}>10 rows</option>
-              <option value={25}>25 rows</option>
-              <option value={50}>50 rows</option>
-              <option value={999}>All rows</option>
+              <option value={5}>5 per page</option>
+              <option value={10}>10 per page</option>
+              <option value={25}>25 per page</option>
+              <option value={50}>50 per page</option>
             </select>
           </div>
           
@@ -207,7 +249,7 @@ const CSVPreview = ({ data, errors = [], filename }) => {
             </thead>
           )}
           <tbody className="bg-white divide-y divide-gray-200">
-            {displayData.rows.slice(0, maxRows).map((row, rowIndex) => {
+            {paginatedRows.map((row, rowIndex) => {
               const rowData = Array.isArray(row) ? row : row.data;
               const hasError = row.hasError || false;
               const rowErrors = row.errors || [];
@@ -238,13 +280,50 @@ const CSVPreview = ({ data, errors = [], filename }) => {
             No data to display
           </div>
         )}
-        
-        {displayData.rows.length > maxRows && (
-          <div className="text-center py-4 text-sm text-gray-500 bg-gray-50">
-            Showing {maxRows} of {displayData.rows.length} rows
-          </div>
-        )}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="border-t border-gray-200 px-4 py-3 bg-gray-50">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-gray-500">
+              Showing {startIndex + 1}-{Math.min(endIndex, displayData.rows.length)} of {displayData.rows.length} rows
+            </div>
+            <Pagination>
+              <PaginationContent>
+                <PaginationItem>
+                  <PaginationPrevious 
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    className={currentPage === 1 ? 'pointer-events-none opacity-50' : ''}
+                  />
+                </PaginationItem>
+                
+                {getPageNumbers().map((pageNum, idx) => (
+                  <PaginationItem key={idx}>
+                    {pageNum === '...' ? (
+                      <PaginationEllipsis />
+                    ) : (
+                      <PaginationLink
+                        isActive={currentPage === pageNum}
+                        onClick={() => setCurrentPage(pageNum)}
+                      >
+                        {pageNum}
+                      </PaginationLink>
+                    )}
+                  </PaginationItem>
+                ))}
+                
+                <PaginationItem>
+                  <PaginationNext 
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    className={currentPage === totalPages ? 'pointer-events-none opacity-50' : ''}
+                  />
+                </PaginationItem>
+              </PaginationContent>
+            </Pagination>
+          </div>
+        </div>
+      )}
 
       {/* Error details for highlighted tab */}
       {activeTab === 'highlighted' && errors.length > 0 && (
