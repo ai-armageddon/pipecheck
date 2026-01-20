@@ -21,9 +21,11 @@ class FileIntegrityError(Exception):
 class CSVProcessor:
     def __init__(self, db: Session):
         self.db = db
-        self.required_columns = ["email"]  # Only email is truly required
-        self.optional_columns = ["name", "phone", "address", "city", "state", "zip", "country", "customer_id", "plan", "monthly_revenue", "signup_date", "is_active"]
-        self.null_variants = ["", "NULL", "N/A", "n/a", "null", "-", "--", "none", "NONE"]
+        # No required columns by default - accept any schema
+        self.required_columns = []
+        # Known columns for special processing (email validation, phone formatting, etc.)
+        self.known_columns = ["email", "name", "phone", "address", "city", "state", "zip", "country", "customer_id", "plan", "monthly_revenue", "signup_date", "is_active"]
+        self.null_variants = ["", "NULL", "N/A", "n/a", "null", "-", "--", "none", "NONE", "nan", "NaN"]
         
     async def process_csv(self, file_path: str, run_id: str) -> Dict[str, int]:
         try:
@@ -462,15 +464,16 @@ class CSVProcessor:
         if all(pd.isna(row_dict.get(col)) or str(row_dict.get(col, "")).strip() in self.null_variants for col in row_dict):
             raise ValidationError("Row is completely empty")
         
-        # Email is required and must be valid
-        email = str(row_dict.get("email", "")).strip()
-        if not email or email in self.null_variants:
-            raise ValidationError("Missing required field: email")
-        
-        if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
-            raise ValidationError(f"Invalid email format: '{email}'")
-        
-        row_dict["email"] = email.lower()
+        # Only validate email if it exists in the schema
+        if "email" in row_dict:
+            email = str(row_dict.get("email", "")).strip()
+            if email and email not in self.null_variants:
+                # Validate email format only if present
+                if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+                    # Don't reject, just log warning - AI may fix later
+                    logger.warning("Invalid email format", email=email, row_index=row_index)
+                else:
+                    row_dict["email"] = email.lower()
         
         # Phone is optional but if present, just clean it (don't reject)
         if "phone" in row_dict and row_dict["phone"] and str(row_dict["phone"]).strip() not in self.null_variants:
@@ -554,18 +557,9 @@ class CSVProcessor:
         return normalized
     
     def generate_row_hash(self, data: Dict[str, Any]) -> str:
-        """Generate consistent hash for deduplication"""
-        hash_data = {
-            "email": data.get("email", ""),
-            "name": data.get("name", ""),
-            "phone": data.get("phone", ""),
-            "address": data.get("address", ""),
-            "city": data.get("city", ""),
-            "state": data.get("state", ""),
-            "zip": data.get("zip", ""),
-            "country": data.get("country", "")
-        }
-        
+        """Generate consistent hash for deduplication - uses all columns"""
+        # Use all non-internal columns for hash
+        hash_data = {k: str(v) if v is not None else "" for k, v in data.items() if not k.startswith('_')}
         hash_string = json.dumps(hash_data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(hash_string.encode()).hexdigest()
     
@@ -653,17 +647,8 @@ class CSVProcessor:
         return normalized
     
     def generate_row_hash(self, data: Dict[str, Any]) -> str:
-        hash_data = {
-            "email": data.get("email", ""),
-            "name": data.get("name", ""),
-            "phone": data.get("phone", ""),
-            "address": data.get("address", ""),
-            "city": data.get("city", ""),
-            "state": data.get("state", ""),
-            "zip": data.get("zip", ""),
-            "country": data.get("country", "")
-        }
-        
+        """Generate consistent hash for deduplication - uses all columns"""
+        hash_data = {k: str(v) if v is not None else "" for k, v in data.items() if not k.startswith('_')}
         hash_string = json.dumps(hash_data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(hash_string.encode()).hexdigest()
     
