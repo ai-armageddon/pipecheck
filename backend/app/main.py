@@ -22,6 +22,13 @@ from .models import IngestRun, DataRow, ErrorLog, RunStatus, ErrorCode
 from .schemas import IngestRunResponse, RunDetail, ErrorDetail, StatsResponse, IngestRun as IngestRunSchema
 from .pipeline import CSVProcessor, FileIntegrityError, ValidationError
 
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 # WebSocket Connection Manager
 class ConnectionManager:
     def __init__(self):
@@ -230,31 +237,29 @@ async def upload_csv(
     )
 
 async def process_csv_file(run_id: str, file_path: str):
-    logger.info("Starting background processing task", run_id=run_id, file_path=file_path)
+    run_logger = logger.bind(correlation_id=run_id, run_id=run_id)
+    run_logger.info("Starting background processing task", file_path=file_path)
     
-    db = next(get_db())
+    db = SessionLocal()
     processor = CSVProcessor(db)
     
-    correlation_id = run_id
-    logger = logger.bind(correlation_id=correlation_id, run_id=run_id)
-    
     try:
-        logger.info("Starting CSV processing", file_path=file_path)
+        run_logger.info("Starting CSV processing", file_path=file_path)
         
         # Update status to processing
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
         if run:
             run.status = RunStatus.PROCESSING
             db.commit()
-            logger.info("Updated run status to processing", run_id=run_id)
+            run_logger.info("Updated run status to processing")
         
         # Process the CSV with enhanced validation
         results = await processor.process_csv(file_path, run_id)
         
-        logger.info("CSV processing completed", **results)
+        run_logger.info("CSV processing completed", **results)
         
     except FileIntegrityError as e:
-        logger.error("File integrity error", error=str(e))
+        run_logger.error("File integrity error", error=str(e))
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
         if run:
             run.status = RunStatus.FAILED
@@ -263,7 +268,7 @@ async def process_csv_file(run_id: str, file_path: str):
             db.commit()
             
     except ValidationError as e:
-        logger.error("Validation error", error=str(e))
+        run_logger.error("Validation error", error=str(e))
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
         if run:
             run.status = RunStatus.FAILED
@@ -272,7 +277,7 @@ async def process_csv_file(run_id: str, file_path: str):
             db.commit()
             
     except Exception as e:
-        logger.error("Unexpected error during processing", error=str(e), exc_info=True)
+        run_logger.error("Unexpected error during processing", error=str(e), exc_info=True)
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
         if run:
             run.status = RunStatus.FAILED
@@ -284,7 +289,7 @@ async def process_csv_file(run_id: str, file_path: str):
         # Clean up uploaded file
         try:
             os.remove(file_path)
-            logger.info("Cleaned up uploaded file", file_path=file_path)
+            run_logger.info("Cleaned up uploaded file", file_path=file_path)
         except:
             pass
             
@@ -293,7 +298,7 @@ async def process_csv_file(run_id: str, file_path: str):
             del active_runs[run_id]
             
         db.close()
-        logger.info("Background processing task completed", run_id=run_id)
+        run_logger.info("Background processing task completed")
 
 @app.get("/runs")
 async def get_runs():

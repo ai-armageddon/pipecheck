@@ -20,8 +20,8 @@ class FileIntegrityError(Exception):
 class CSVProcessor:
     def __init__(self, db: Session):
         self.db = db
-        self.required_columns = ["email", "name"]
-        self.optional_columns = ["phone", "address", "city", "state", "zip", "country"]
+        self.required_columns = ["email"]  # Only email is truly required
+        self.optional_columns = ["name", "phone", "address", "city", "state", "zip", "country", "customer_id", "plan", "monthly_revenue", "signup_date", "is_active"]
         self.null_variants = ["", "NULL", "N/A", "n/a", "null", "-", "--", "none", "NONE"]
         
     async def process_csv(self, file_path: str, run_id: str) -> Dict[str, int]:
@@ -62,7 +62,7 @@ class CSVProcessor:
                     results[key] += batch_results[key]
             
             # Update run status
-            run = self.db.query(IngestRun).filter(IngestRun.run_id == run_id).first()
+            run = self.db.query(IngestRun).filter(IngestRun.id == run_id).first()
             if run:
                 run.status = "completed" if results["rows_rejected"] == 0 else "partial_success"
                 run.total_rows = results["total_rows"]
@@ -79,7 +79,7 @@ class CSVProcessor:
             logger.error("CSV processing failed", run_id=run_id, error=str(e), exc_info=True)
             
             # Update run status to failed
-            run = self.db.query(IngestRun).filter(IngestRun.run_id == run_id).first()
+            run = self.db.query(IngestRun).filter(IngestRun.id == run_id).first()
             if run:
                 run.status = "failed"
                 run.completed_at = datetime.utcnow()

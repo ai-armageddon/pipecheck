@@ -6,6 +6,27 @@ import { Progress } from './Progress';
 import Console from './Console';
 import './App.css';
 
+// Elapsed Timer Component
+const ElapsedTimer = ({ startTime }) => {
+  const [elapsed, setElapsed] = useState(0);
+  
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsed(Date.now() - startTime);
+    }, 100);
+    
+    return () => clearInterval(interval);
+  }, [startTime]);
+  
+  const seconds = (elapsed / 1000).toFixed(1);
+  
+  return (
+    <span className="text-sm text-gray-500 font-mono">
+      {seconds}s
+    </span>
+  );
+};
+
 function App() {
   const [runs, setRuns] = useState([]);
   const [stats, setStats] = useState(null);
@@ -20,6 +41,8 @@ function App() {
   const [consoleLogs, setConsoleLogs] = useState([]);
   const [consoleExpanded, setConsoleExpanded] = useState(false);
   const [showStatusMeaning, setShowStatusMeaning] = useState(false);
+  const [uploadStartTime, setUploadStartTime] = useState(null);
+  const [processingTime, setProcessingTime] = useState(null);
   const ws = useRef(null);
   const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
   const [csvText, setCsvText] = useState('');
@@ -222,8 +245,13 @@ function App() {
       return;
     }
 
+    const startTime = Date.now();
+    setUploadStartTime(startTime);
+    setProcessingTime(null);
     setUploading(true);
     setUploadProgress(0);
+    addLog('info', `Starting upload: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
+    
     const formData = new FormData();
     formData.append('file', file);
 
@@ -240,6 +268,7 @@ function App() {
         },
       });
       
+      addLog('info', `File uploaded, run ID: ${response.data.run_id}`);
       setCurrentUploadId(response.data.run_id);
       setProcessingProgress({ [response.data.run_id]: 0 });
       
@@ -248,22 +277,28 @@ function App() {
       
       if (response.data.status === 'skipped') {
         toast.info('File already processed. Skipping duplicate.');
+        addLog('warn', 'Duplicate file detected, skipping');
         setUploadProgress(0);
         setCurrentUploadId(null);
+        setProcessingTime(Date.now() - startTime);
       } else if (response.data.status === 'pending') {
         toast.success('File uploaded successfully and is being processed.');
+        addLog('info', 'Processing started...');
         // Poll for progress updates
-        pollProcessingProgress(response.data.run_id);
+        pollProcessingProgress(response.data.run_id, startTime);
       } else {
         toast.success('File uploaded successfully.');
         setUploadProgress(0);
         setCurrentUploadId(null);
+        setProcessingTime(Date.now() - startTime);
       }
     } catch (error) {
       console.error('Upload error:', error);
       toast.error('Upload failed: ' + (error.response?.data?.detail || error.message));
+      addLog('error', `Upload failed: ${error.response?.data?.detail || error.message}`);
       setUploadProgress(0);
       setCurrentUploadId(null);
+      setProcessingTime(null);
     } finally {
       setUploading(false);
     }
@@ -454,7 +489,7 @@ function App() {
     }
   };
 
-  const pollProcessingProgress = async (runId) => {
+  const pollProcessingProgress = async (runId, startTime = null) => {
     const pollInterval = setInterval(async () => {
       try {
         const response = await axios.get(`http://localhost:8001/runs/${runId}`);
@@ -462,6 +497,14 @@ function App() {
         
         if (run.status === 'completed' || run.status === 'failed' || run.status === 'partial_success') {
           clearInterval(pollInterval);
+          
+          const elapsed = startTime ? Date.now() - startTime : null;
+          if (elapsed) {
+            setProcessingTime(elapsed);
+            addLog('info', `Processing completed in ${(elapsed / 1000).toFixed(2)}s - Status: ${run.status}`);
+            addLog('info', `Results: ${run.rows_inserted} inserted, ${run.rows_updated} updated, ${run.errors_count} errors`);
+          }
+          
           setProcessingProgress(prev => {
             const newProgress = { ...prev };
             delete newProgress[runId];
@@ -471,6 +514,14 @@ function App() {
           setCurrentUploadId(null);
           await fetchRuns();
           await fetchStats();
+          
+          if (run.status === 'completed') {
+            toast.success(`Processing complete! ${run.rows_inserted} rows inserted.`);
+          } else if (run.status === 'partial_success') {
+            toast.warning(`Processing complete with errors. ${run.rows_inserted} inserted, ${run.errors_count} errors.`);
+          } else {
+            toast.error('Processing failed. Check the console for details.');
+          }
         } else if (run.status === 'processing') {
           // Calculate progress based on rows processed
           const progress = run.total_rows > 0 
@@ -482,7 +533,7 @@ function App() {
         console.error('Error polling progress:', error);
         clearInterval(pollInterval);
       }
-    }, 1000);
+    }, 500); // Poll every 500ms for faster updates
   };
 
   const getStatusIcon = (status) => {
@@ -816,7 +867,15 @@ Jane Smith,jane@example.com,555-5678"
             {(uploading || currentUploadId) && (
               <div className="bg-white rounded-lg shadow mt-6">
                 <div className={`${sizeClasses.card}`}>
-                  <h3 className={`${sizeClasses.title} font-semibold mb-4`}>Upload Progress</h3>
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className={`${sizeClasses.title} font-semibold`}>
+                      <RefreshCw className="inline w-4 h-4 mr-2 animate-spin" />
+                      Processing...
+                    </h3>
+                    {uploadStartTime && (
+                      <ElapsedTimer startTime={uploadStartTime} />
+                    )}
+                  </div>
                   
                   {uploadProgress < 100 && (
                     <div className="mb-4">
@@ -841,6 +900,16 @@ Jane Smith,jane@example.com,555-5678"
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* Last Processing Time */}
+            {processingTime && !uploading && !currentUploadId && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 mt-6">
+                <p className="text-sm text-green-700">
+                  <CheckCircle className="inline w-4 h-4 mr-1" />
+                  Last upload completed in <strong>{(processingTime / 1000).toFixed(2)}s</strong>
+                </p>
               </div>
             )}
 
