@@ -72,6 +72,52 @@ function App() {
     };
   }, []);
 
+  // Load logs from localStorage on mount and fetch recent logs from backend
+  useEffect(() => {
+    // First load from localStorage
+    const savedLogs = localStorage.getItem('csvConsoleLogs');
+    if (savedLogs) {
+      try {
+        setConsoleLogs(JSON.parse(savedLogs));
+      } catch (e) {
+        console.error('Failed to parse saved logs:', e);
+      }
+    }
+    
+    // Then fetch recent logs from backend
+    const fetchRecentLogs = async () => {
+      try {
+        const response = await axios.get('http://localhost:8001/logs/recent?limit=50');
+        const backendLogs = response.data.map(log => ({
+          timestamp: new Date(log.timestamp).toLocaleTimeString(),
+          level: log.level,
+          message: log.message,
+          runId: log.run_id
+        }));
+        
+        setConsoleLogs(prev => {
+          // Combine with existing logs, remove duplicates, and keep last 500
+          const combined = [...backendLogs.reverse(), ...prev];
+          const unique = combined.filter((log, index, arr) => 
+            arr.findIndex(l => l.timestamp === log.timestamp && l.message === log.message) === index
+          );
+          return unique.slice(-500);
+        });
+      } catch (error) {
+        console.error('Failed to fetch recent logs:', error);
+      }
+    };
+    
+    fetchRecentLogs();
+  }, []);
+
+  // Save logs to localStorage whenever they change
+  useEffect(() => {
+    if (consoleLogs.length > 0) {
+      localStorage.setItem('csvConsoleLogs', JSON.stringify(consoleLogs));
+    }
+  }, [consoleLogs]);
+
   // Connect to run-specific WebSocket when uploading
   useEffect(() => {
     if (currentUploadId) {
@@ -375,6 +421,16 @@ function App() {
       console.error('Delete error:', error);
       toast.error('Delete failed: ' + (error.response?.data?.detail || error.message));
     }
+  };
+
+  const handleClearLogs = () => {
+    setConsoleLogs([]);
+  };
+
+  const handleClearPersistedLogs = () => {
+    setConsoleLogs([]);
+    localStorage.removeItem('csvConsoleLogs');
+    toast.success('All logs cleared from storage');
   };
 
   const handleDeleteAllRuns = async () => {
@@ -1024,13 +1080,13 @@ Jane Smith,jane@example.com,555-5678"
             )}
           </div>
         </div>
-      </div>
 
         {/* Real-time Console */}
         <div className="mt-6">
           <Console 
             logs={consoleLogs}
-            onClear={() => setConsoleLogs([])}
+            onClear={handleClearLogs}
+            onClearPersisted={handleClearPersistedLogs}
             isExpanded={consoleExpanded}
             onToggle={() => setConsoleExpanded(!consoleExpanded)}
           />

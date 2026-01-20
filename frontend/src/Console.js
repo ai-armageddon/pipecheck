@@ -1,15 +1,28 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Terminal, ChevronUp, ChevronDown, Copy } from 'lucide-react';
 
-const Console = ({ logs, onClear, isExpanded, onToggle }) => {
+const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
   const consoleRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [persistedLogs, setPersistedLogs] = useState(0);
 
   useEffect(() => {
     if (autoScroll && consoleRef.current) {
       consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
     }
   }, [logs, autoScroll]);
+
+  useEffect(() => {
+    // Check how many logs are persisted
+    const savedLogs = localStorage.getItem('csvConsoleLogs');
+    if (savedLogs) {
+      try {
+        setPersistedLogs(JSON.parse(savedLogs).length);
+      } catch (e) {
+        setPersistedLogs(0);
+      }
+    }
+  }, [logs]);
 
   const handleScroll = () => {
     if (consoleRef.current) {
@@ -51,6 +64,11 @@ const Console = ({ logs, onClear, isExpanded, onToggle }) => {
           <Terminal className="w-4 h-4 text-green-400" />
           <span className="text-sm font-medium text-gray-300">Processing Console</span>
           <span className="text-xs text-gray-500">({logs.length} messages)</span>
+          {persistedLogs > 0 && (
+            <span className="text-xs text-green-400" title="Logs persisted in browser storage">
+              ● {persistedLogs} saved
+            </span>
+          )}
         </div>
         <div className="flex items-center space-x-2">
           <button
@@ -63,10 +81,19 @@ const Console = ({ logs, onClear, isExpanded, onToggle }) => {
           <button
             onClick={onClear}
             className="p-1 text-gray-400 hover:text-white transition-colors"
-            title="Clear logs"
+            title="Clear current logs"
           >
             Clear
           </button>
+          {onClearPersisted && (
+            <button
+              onClick={onClearPersisted}
+              className="p-1 text-red-400 hover:text-red-300 transition-colors"
+              title="Clear persisted logs"
+            >
+              Clear All
+            </button>
+          )}
           <button
             onClick={onToggle}
             className="p-1 text-gray-400 hover:text-white transition-colors"

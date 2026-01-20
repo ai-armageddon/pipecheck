@@ -74,28 +74,33 @@ manager = ConnectionManager()
 # Custom logger processor for WebSocket
 def websocket_logger(logger, method_name: str, event_dict):
     """Send logs to WebSocket connections"""
-    if "run_id" in event_dict:
-        message = {
-            "type": "log",
-            "timestamp": datetime.utcnow().isoformat(),
-            "level": event_dict.get("level", "info"),
-            "message": event_dict.get("event", ""),
-            "run_id": event_dict.get("run_id"),
-            "data": event_dict
-        }
-        # Use asyncio.create_task to avoid blocking
-        asyncio.create_task(manager.broadcast_to_run(json.dumps(message), event_dict["run_id"]))
-    
-    # Also broadcast to global console
-    message = {
-        "type": "log",
-        "timestamp": datetime.utcnow().isoformat(),
-        "level": event_dict.get("level", "info"),
-        "message": event_dict.get("event", ""),
-        "run_id": event_dict.get("run_id", "system"),
-        "data": event_dict
-    }
-    asyncio.create_task(manager.broadcast(json.dumps(message)))
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            if "run_id" in event_dict:
+                message = {
+                    "type": "log",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "level": event_dict.get("level", "info"),
+                    "message": event_dict.get("event", ""),
+                    "run_id": event_dict.get("run_id"),
+                    "data": event_dict
+                }
+                asyncio.create_task(manager.broadcast_to_run(json.dumps(message), event_dict["run_id"]))
+            
+            # Also broadcast to global console
+            message = {
+                "type": "log",
+                "timestamp": datetime.utcnow().isoformat(),
+                "level": event_dict.get("level", "info"),
+                "message": event_dict.get("event", ""),
+                "run_id": event_dict.get("run_id", "system"),
+                "data": event_dict
+            }
+            asyncio.create_task(manager.broadcast(json.dumps(message)))
+    except:
+        # If no event loop or any other error, just skip WebSocket logging
+        pass
     
     return event_dict
 
@@ -225,6 +230,8 @@ async def upload_csv(
     )
 
 async def process_csv_file(run_id: str, file_path: str):
+    logger.info("Starting background processing task", run_id=run_id, file_path=file_path)
+    
     db = next(get_db())
     processor = CSVProcessor(db)
     
@@ -239,6 +246,7 @@ async def process_csv_file(run_id: str, file_path: str):
         if run:
             run.status = RunStatus.PROCESSING
             db.commit()
+            logger.info("Updated run status to processing", run_id=run_id)
         
         # Process the CSV with enhanced validation
         results = await processor.process_csv(file_path, run_id)
@@ -276,6 +284,7 @@ async def process_csv_file(run_id: str, file_path: str):
         # Clean up uploaded file
         try:
             os.remove(file_path)
+            logger.info("Cleaned up uploaded file", file_path=file_path)
         except:
             pass
             
@@ -284,6 +293,7 @@ async def process_csv_file(run_id: str, file_path: str):
             del active_runs[run_id]
             
         db.close()
+        logger.info("Background processing task completed", run_id=run_id)
 
 @app.get("/runs")
 async def get_runs():
@@ -531,6 +541,50 @@ async def websocket_global(websocket: WebSocket):
             await websocket.send_json({"type": "ping"})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.get("/logs/recent")
+async def get_recent_logs(limit: int = 100):
+    """Get recent logs from the database"""
+    db = next(get_db())
+    
+    try:
+        # Get recent error logs (you could also implement a full logging table)
+        recent_errors = db.query(ErrorLog).order_by(ErrorLog.created_at.desc()).limit(limit).all()
+        
+        logs = []
+        for error in recent_errors:
+            logs.append({
+                "timestamp": error.created_at.isoformat(),
+                "level": "error",
+                "message": f"Row {error.row_index}: {error.error_message}",
+                "run_id": error.run_id
+            })
+        
+        # Also get recent runs with their status
+        recent_runs = db.query(IngestRun).order_by(IngestRun.created_at.desc()).limit(10).all()
+        for run in recent_runs:
+            logs.append({
+                "timestamp": run.created_at.isoformat(),
+                "level": "info",
+                "message": f"File '{run.filename}' uploaded with status '{run.status}'",
+                "run_id": run.id
+            })
+            
+            if run.completed_at:
+                logs.append({
+                    "timestamp": run.completed_at.isoformat(),
+                    "level": "info",
+                    "message": f"Processing completed. Inserted: {run.rows_inserted}, Updated: {run.rows_updated}, Errors: {run.errors_count}",
+                    "run_id": run.id
+                })
+        
+        # Sort by timestamp
+        logs.sort(key=lambda x: x["timestamp"], reverse=True)
+        
+        return logs[:limit]
+        
+    finally:
+        db.close()
 
 @app.delete("/runs/{run_id}")
 async def delete_run(run_id: str):
