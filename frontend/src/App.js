@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, Terminal, HelpCircle, SkipForward } from 'lucide-react';
 import axios from 'axios';
 import { Toaster, toast } from 'sonner';
 import { Progress } from './Progress';
+import Console from './Console';
 import './App.css';
 
 function App() {
@@ -16,6 +17,10 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingProgress, setProcessingProgress] = useState({});
   const [currentUploadId, setCurrentUploadId] = useState(null);
+  const [consoleLogs, setConsoleLogs] = useState([]);
+  const [consoleExpanded, setConsoleExpanded] = useState(false);
+  const [showStatusMeaning, setShowStatusMeaning] = useState(false);
+  const ws = useRef(null);
   const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
   const [csvText, setCsvText] = useState('');
   const [csvUrl, setCsvUrl] = useState('');
@@ -29,6 +34,77 @@ function App() {
     }, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // WebSocket connection for real-time logs
+  useEffect(() => {
+    // Connect to global WebSocket
+    ws.current = new WebSocket('ws://localhost:8001/ws');
+    
+    ws.current.onopen = () => {
+      console.log('Connected to WebSocket');
+      addLog('info', 'Connected to real-time console');
+    };
+    
+    ws.current.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      
+      if (data.type === 'log') {
+        addLog(data.level, data.message, data.timestamp, data.run_id);
+      } else if (data.type === 'ping') {
+        // Ignore ping messages
+      }
+    };
+    
+    ws.current.onclose = () => {
+      console.log('Disconnected from WebSocket');
+      addLog('warn', 'Disconnected from real-time console');
+    };
+    
+    ws.current.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      addLog('error', 'WebSocket connection error');
+    };
+    
+    return () => {
+      if (ws.current) {
+        ws.current.close();
+      }
+    };
+  }, []);
+
+  // Connect to run-specific WebSocket when uploading
+  useEffect(() => {
+    if (currentUploadId) {
+      const runWs = new WebSocket(`ws://localhost:8001/ws/${currentUploadId}`);
+      
+      runWs.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'log') {
+          addLog(data.level, data.message, data.timestamp, data.run_id);
+        }
+      };
+      
+      return () => {
+        runWs.close();
+      };
+    }
+  }, [currentUploadId]);
+
+  const addLog = (level, message, timestamp = null, runId = null) => {
+    const newLog = {
+      timestamp: timestamp || new Date().toLocaleTimeString(),
+      level,
+      message,
+      runId
+    };
+    
+    setConsoleLogs(prev => {
+      const updated = [...prev, newLog];
+      // Keep only last 1000 logs
+      return updated.slice(-1000);
+    });
+  };
 
   // Poll for progress of processing runs
   useEffect(() => {
@@ -458,7 +534,61 @@ function App() {
               {Math.round(uiScale * 100)}%
             </span>
           </div>
+          <button
+            onClick={() => setShowStatusMeaning(!showStatusMeaning)}
+            className="ml-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+            title="What do the statuses mean?"
+          >
+            <HelpCircle className="w-5 h-5" />
+          </button>
         </header>
+
+        {/* Status Meanings Popup */}
+        {showStatusMeaning && (
+          <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex justify-between items-start mb-2">
+              <h3 className="font-semibold text-blue-900">Status Meanings</h3>
+              <button
+                onClick={() => setShowStatusMeaning(false)}
+                className="text-blue-600 hover:text-blue-800"
+              >
+                ×
+              </button>
+            </div>
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center">
+                <Clock className="w-4 h-4 text-yellow-500 mr-2" />
+                <span className="font-medium">Pending:</span>
+                <span className="ml-2 text-gray-600">File uploaded, waiting to be processed</span>
+              </div>
+              <div className="flex items-center">
+                <RefreshCw className="w-4 h-4 text-blue-500 mr-2 animate-spin" />
+                <span className="font-medium">Processing:</span>
+                <span className="ml-2 text-gray-600">Currently validating and importing data</span>
+              </div>
+              <div className="flex items-center">
+                <CheckCircle className="w-4 h-4 text-green-500 mr-2" />
+                <span className="font-medium">Completed:</span>
+                <span className="ml-2 text-gray-600">Successfully processed all rows</span>
+              </div>
+              <div className="flex items-center">
+                <XCircle className="w-4 h-4 text-red-500 mr-2" />
+                <span className="font-medium">Failed:</span>
+                <span className="ml-2 text-gray-600">Processing failed due to an error</span>
+              </div>
+              <div className="flex items-center">
+                <AlertCircle className="w-4 h-4 text-yellow-500 mr-2" />
+                <span className="font-medium">Partial Success:</span>
+                <span className="ml-2 text-gray-600">Some rows processed, others rejected</span>
+              </div>
+              <div className="flex items-center">
+                <SkipForward className="w-4 h-4 text-gray-500 mr-2" />
+                <span className="font-medium">Skipped:</span>
+                <span className="ml-2 text-gray-600">Duplicate file, not processed</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {stats && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -893,6 +1023,17 @@ Jane Smith,jane@example.com,555-5678"
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+        {/* Real-time Console */}
+        <div className="mt-6">
+          <Console 
+            logs={consoleLogs}
+            onClear={() => setConsoleLogs([])}
+            isExpanded={consoleExpanded}
+            onToggle={() => setConsoleExpanded(!consoleExpanded)}
+          />
         </div>
       </div>
     </div>

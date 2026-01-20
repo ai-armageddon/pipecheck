@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -16,10 +16,88 @@ from datetime import datetime
 import structlog
 from contextlib import asynccontextmanager
 from sqlalchemy import func
+import asyncio
 from .database import SessionLocal, engine, Base
 from .models import IngestRun, DataRow, ErrorLog, RunStatus, ErrorCode
 from .schemas import IngestRunResponse, RunDetail, ErrorDetail, StatsResponse, IngestRun as IngestRunSchema
 from .pipeline import CSVProcessor, FileIntegrityError, ValidationError
+
+# WebSocket Connection Manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.run_connections: Dict[str, List[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, run_id: str = None):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        if run_id:
+            if run_id not in self.run_connections:
+                self.run_connections[run_id] = []
+            self.run_connections[run_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, run_id: str = None):
+        self.active_connections.remove(websocket)
+        if run_id and run_id in self.run_connections:
+            self.run_connections[run_id].remove(websocket)
+            if not self.run_connections[run_id]:
+                del self.run_connections[run_id]
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except:
+                # Connection closed, remove it
+                self.active_connections.remove(connection)
+
+    async def broadcast_to_run(self, message: str, run_id: str):
+        if run_id in self.run_connections:
+            disconnected = []
+            for connection in self.run_connections[run_id]:
+                try:
+                    await connection.send_text(message)
+                except:
+                    disconnected.append(connection)
+            
+            # Clean up disconnected connections
+            for conn in disconnected:
+                self.run_connections[run_id].remove(conn)
+                if conn in self.active_connections:
+                    self.active_connections.remove(conn)
+
+manager = ConnectionManager()
+
+# Custom logger processor for WebSocket
+def websocket_logger(logger, method_name: str, event_dict):
+    """Send logs to WebSocket connections"""
+    if "run_id" in event_dict:
+        message = {
+            "type": "log",
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": event_dict.get("level", "info"),
+            "message": event_dict.get("event", ""),
+            "run_id": event_dict.get("run_id"),
+            "data": event_dict
+        }
+        # Use asyncio.create_task to avoid blocking
+        asyncio.create_task(manager.broadcast_to_run(json.dumps(message), event_dict["run_id"]))
+    
+    # Also broadcast to global console
+    message = {
+        "type": "log",
+        "timestamp": datetime.utcnow().isoformat(),
+        "level": event_dict.get("level", "info"),
+        "message": event_dict.get("event", ""),
+        "run_id": event_dict.get("run_id", "system"),
+        "data": event_dict
+    }
+    asyncio.create_task(manager.broadcast(json.dumps(message)))
+    
+    return event_dict
 
 logging.basicConfig(
     format="%(message)s",
@@ -37,7 +115,8 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
+        structlog.processors.JSONRenderer(),
+        websocket_logger,  # Custom processor for WebSocket
     ],
     context_class=dict,
     logger_factory=structlog.stdlib.LoggerFactory(),
@@ -430,6 +509,28 @@ async def export_error_report(run_id: str, format: str = "csv"):
         
     finally:
         db.close()
+
+@app.websocket("/ws/{run_id}")
+async def websocket_endpoint(websocket: WebSocket, run_id: str):
+    await manager.connect(websocket, run_id)
+    try:
+        while True:
+            # Keep connection alive
+            await asyncio.sleep(10)
+            await websocket.send_json({"type": "ping"})
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, run_id)
+
+@app.websocket("/ws")
+async def websocket_global(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive
+            await asyncio.sleep(10)
+            await websocket.send_json({"type": "ping"})
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 @app.delete("/runs/{run_id}")
 async def delete_run(run_id: str):
