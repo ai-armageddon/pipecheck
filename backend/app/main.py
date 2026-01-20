@@ -667,6 +667,59 @@ async def delete_run(run_id: str):
     finally:
         db.close()
 
+@app.post("/runs/{run_id}/reprocess")
+async def reprocess_run(run_id: str, background_tasks: BackgroundTasks):
+    """Reprocess an existing run - clears old data and reprocesses the file"""
+    db = next(get_db())
+    
+    try:
+        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        
+        # Check if original file still exists
+        upload_dir = Path("uploads")
+        file_path = None
+        for f in upload_dir.glob(f"{run_id}_*"):
+            file_path = f
+            break
+        
+        if not file_path or not file_path.exists():
+            raise HTTPException(status_code=404, detail="Original file not found. Please re-upload the file.")
+        
+        # Clear existing data for this run
+        db.query(DataRow).filter(DataRow.run_id == run_id).delete()
+        db.query(ErrorLog).filter(ErrorLog.run_id == run_id).delete()
+        
+        # Reset run status
+        run.status = RunStatus.PENDING
+        run.total_rows = 0
+        run.rows_inserted = 0
+        run.rows_updated = 0
+        run.rows_skipped = 0
+        run.rows_rejected = 0
+        run.errors_count = 0
+        run.completed_at = None
+        run.error_message = None
+        db.commit()
+        
+        logger.info("Reprocessing run", run_id=run_id, file_path=str(file_path))
+        
+        active_runs[run_id] = {"status": "processing", "progress": 0}
+        background_tasks.add_task(process_csv_file, run_id, str(file_path))
+        
+        return {"message": "Reprocessing started", "run_id": run_id, "status": "pending"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to reprocess run", run_id=run_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to reprocess: {str(e)}")
+        
+    finally:
+        db.close()
+
 @app.delete("/runs")
 async def delete_all_runs():
     """Delete all runs and associated data"""

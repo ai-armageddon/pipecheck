@@ -662,6 +662,28 @@ function App() {
     });
   };
 
+  const handleReprocessRun = async (runId) => {
+    soundManager.click();
+    try {
+      addLog('info', `Reprocessing run ${runId}...`);
+      const response = await axios.post(`http://localhost:8001/runs/${runId}/reprocess`);
+      
+      setCurrentUploadId(runId);
+      setProcessingProgress({ [runId]: 0 });
+      
+      await fetchRuns();
+      toast.success('Reprocessing started');
+      addLog('info', 'Reprocessing started...');
+      
+      // Poll for progress
+      pollProcessingProgress(runId, Date.now());
+    } catch (error) {
+      console.error('Reprocess error:', error);
+      toast.error('Reprocess failed: ' + (error.response?.data?.detail || error.message));
+      addLog('error', `Reprocess failed: ${error.response?.data?.detail || error.message}`);
+    }
+  };
+
   const handleClearLogs = () => {
     soundManager.click();
     setConsoleLogs([]);
@@ -1324,16 +1346,28 @@ Jane Smith,jane@example.com,555-5678"
                             )}
                           </td>
                           <td className={`${sizeClasses.table} text-center`}>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteRun(run.run_id);
-                              }}
-                              className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
-                              title="Delete run"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            <div className="flex justify-center gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleReprocessRun(run.run_id);
+                                }}
+                                className="p-1 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded"
+                                title="Reprocess file"
+                              >
+                                <RefreshCw className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteRun(run.run_id);
+                                }}
+                                className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                                title="Delete run"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
