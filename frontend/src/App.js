@@ -48,6 +48,11 @@ function App() {
   const [processingTime, setProcessingTime] = useState(null);
   const [uploadedFileContent, setUploadedFileContent] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState(null);
+  const [filePreviewCache, setFilePreviewCache] = useState(() => {
+    // Load cached previews from localStorage
+    const cached = localStorage.getItem('csvFilePreviewCache');
+    return cached ? JSON.parse(cached) : {};
+  });
   const [soundEnabled, setSoundEnabled] = useState(soundManager.enabled);
   const [duplicateFileDialog, setDuplicateFileDialog] = useState({ open: false, file: null, existingRun: null });
   const ws = useRef(null);
@@ -162,6 +167,25 @@ function App() {
   useEffect(() => {
     localStorage.setItem('csvConsoleExpanded', JSON.stringify(consoleExpanded));
   }, [consoleExpanded]);
+
+  // Save file preview cache to localStorage
+  useEffect(() => {
+    if (Object.keys(filePreviewCache).length > 0) {
+      // Keep only last 10 previews to avoid localStorage bloat
+      const entries = Object.entries(filePreviewCache);
+      const trimmed = entries.slice(-10);
+      localStorage.setItem('csvFilePreviewCache', JSON.stringify(Object.fromEntries(trimmed)));
+    }
+  }, [filePreviewCache]);
+
+  // Load preview when selecting a run
+  useEffect(() => {
+    if (selectedRun && filePreviewCache[selectedRun.run_id]) {
+      const cached = filePreviewCache[selectedRun.run_id];
+      setUploadedFileContent(cached.content);
+      setUploadedFileName(cached.filename);
+    }
+  }, [selectedRun?.run_id]);
 
   // Connect to run-specific WebSocket when uploading
   useEffect(() => {
@@ -297,14 +321,21 @@ function App() {
 
     // Read file content for preview
     const reader = new FileReader();
+    let fileContent = null;
     reader.onload = (e) => {
-      setUploadedFileContent(e.target.result);
+      fileContent = e.target.result;
+      setUploadedFileContent(fileContent);
       setUploadedFileName(uploadFile.name);
     };
     reader.onerror = (e) => {
       console.error('FileReader error:', e);
     };
-    reader.readAsText(uploadFile);
+    
+    // Wait for file to be read before proceeding
+    await new Promise((resolve) => {
+      reader.onloadend = resolve;
+      reader.readAsText(uploadFile);
+    });
 
     soundManager.upload();
     const startTime = Date.now();
@@ -338,6 +369,17 @@ function App() {
       addLog('info', `File uploaded, run ID: ${response.data.run_id}`);
       setCurrentUploadId(response.data.run_id);
       setProcessingProgress({ [response.data.run_id]: 0 });
+      
+      // Cache the file preview for this run
+      if (fileContent) {
+        setFilePreviewCache(prev => ({
+          ...prev,
+          [response.data.run_id]: {
+            content: fileContent,
+            filename: uploadFile.name
+          }
+        }));
+      }
       
       await fetchRuns();
       await fetchStats();
