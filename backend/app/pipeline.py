@@ -262,10 +262,18 @@ class CSVProcessor:
         return results
     
     async def process_row(self, row: pd.Series, row_index: int, run_id: str) -> str:
-        """Process individual row with enhanced validation"""
-        validated_data = await self.validate_row(row, row_index)
+        """Process individual row with auto-fix and enhanced validation"""
+        # First try to auto-fix the row
+        fixed_data, fixes_applied = await self.auto_fix_row(row, row_index, run_id)
+        
+        # Then validate the fixed data
+        validated_data = await self.validate_row_lenient(fixed_data, row_index)
         normalized_data = await self.normalize_data(validated_data)
         row_hash = self.generate_row_hash(normalized_data)
+        
+        # Store fixes applied for reporting
+        if fixes_applied:
+            normalized_data['_fixes_applied'] = fixes_applied
         
         # Check for existing row (idempotency)
         existing_row = self.db.query(DataRow).filter(DataRow.row_hash == row_hash).first()
@@ -294,79 +302,126 @@ class CSVProcessor:
         
         return "inserted"
     
-    async def validate_row(self, row: pd.Series, row_index: int) -> Dict[str, Any]:
-        """Enhanced row validation with detailed error messages"""
-        errors = []
+    async def auto_fix_row(self, row: pd.Series, row_index: int, run_id: str) -> Tuple[Dict[str, Any], List[str]]:
+        """Attempt to auto-fix common data issues"""
         row_dict = row.to_dict()
+        fixes_applied = []
         
-        # Check for completely empty rows
-        if all(pd.isna(row_dict[col]) or str(row_dict[col]).strip() in self.null_variants for col in row_dict):
-            raise ValidationError("Row is completely empty")
-        
-        # Validate required fields
-        missing_required = []
-        for col in self.required_columns:
-            if col not in row_dict:
-                missing_required.append(f"'{col}' column missing")
-            elif pd.isna(row_dict[col]) or str(row_dict[col]).strip() in self.null_variants:
-                missing_required.append(f"'{col}' is empty or null")
-        
-        if missing_required:
-            raise ValidationError(f"Missing required fields: {', '.join(missing_required)}")
-        
-        # Email validation with detailed error
+        # Fix email issues
         if "email" in row_dict:
-            email = str(row_dict["email"]).strip()
-            if not email:
-                raise ValidationError("Email cannot be empty")
+            email = str(row_dict.get("email", "")).strip()
+            original_email = email
             
-            email = email.lower()
-            if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
-                raise ValidationError(f"Invalid email format: '{email}'. Expected format: user@domain.com")
+            # Fix missing @ symbol (e.g., "john.smith.example.com" -> try to fix)
+            if email and "@" not in email:
+                # Try to find common domain patterns
+                domain_patterns = ['.com', '.io', '.co', '.net', '.org', '.biz']
+                for pattern in domain_patterns:
+                    if pattern in email:
+                        idx = email.rfind(pattern)
+                        # Find the last dot before the domain
+                        prefix = email[:idx]
+                        suffix = email[idx:]
+                        # Find where the domain starts (last segment before .com etc)
+                        parts = prefix.rsplit('.', 1)
+                        if len(parts) == 2:
+                            email = f"{parts[0]}@{parts[1]}{suffix}"
+                            fixes_applied.append(f"Fixed email: added @ symbol ({original_email} -> {email})")
+                            break
+            
+            # Fix emails starting with @
+            if email.startswith("@"):
+                email = ""  # Can't fix, will be caught by validation
+            
+            # Lowercase and trim
+            if email:
+                email = email.lower().strip()
+                if email != original_email.lower().strip():
+                    fixes_applied.append(f"Normalized email to lowercase")
+            
             row_dict["email"] = email
         
-        # Phone validation with locale support
+        # Fix phone number issues
+        if "phone" in row_dict:
+            phone = str(row_dict.get("phone", "")).strip()
+            original_phone = phone
+            
+            if phone and phone not in self.null_variants:
+                # Remove all non-digit characters except +
+                phone_clean = re.sub(r'[^\d+]', '', phone)
+                
+                # If phone is too short, try to pad with area code or mark as incomplete
+                if len(phone_clean) < 10 and len(phone_clean) >= 7:
+                    # Assume US number missing area code - add placeholder
+                    phone_clean = "000" + phone_clean
+                    fixes_applied.append(f"Phone number padded with placeholder area code ({original_phone} -> {phone_clean})")
+                elif len(phone_clean) < 7:
+                    # Too short to fix, set to empty
+                    phone_clean = ""
+                    fixes_applied.append(f"Phone number too short, cleared ({original_phone})")
+                
+                row_dict["phone"] = phone_clean
+        
+        # Fix name issues
+        if "name" in row_dict:
+            name = str(row_dict.get("name", "")).strip()
+            
+            # If name is empty but we have email, try to extract from email
+            if (not name or name in self.null_variants) and "email" in row_dict:
+                email = str(row_dict.get("email", ""))
+                if "@" in email:
+                    email_prefix = email.split("@")[0]
+                    # Convert email prefix to name (john.doe -> John Doe)
+                    name_parts = re.split(r'[._-]', email_prefix)
+                    extracted_name = " ".join(part.capitalize() for part in name_parts if part)
+                    if len(extracted_name) >= 2:
+                        row_dict["name"] = extracted_name
+                        fixes_applied.append(f"Extracted name from email: {extracted_name}")
+        
+        # Fix missing email - check if there's an email-like value in other columns
+        if "email" in row_dict and (not row_dict["email"] or row_dict["email"] in self.null_variants):
+            for col, val in row_dict.items():
+                if col != "email" and val and "@" in str(val):
+                    potential_email = str(val).strip().lower()
+                    if re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', potential_email):
+                        row_dict["email"] = potential_email
+                        fixes_applied.append(f"Found email in '{col}' column: {potential_email}")
+                        break
+        
+        # Log fixes if any were applied
+        if fixes_applied:
+            logger.info("Auto-fixes applied", run_id=run_id, row_index=row_index, fixes=fixes_applied)
+        
+        return row_dict, fixes_applied
+    
+    async def validate_row_lenient(self, row_dict: Dict[str, Any], row_index: int) -> Dict[str, Any]:
+        """Lenient row validation - only reject truly unfixable issues"""
+        errors = []
+        
+        # Check for completely empty rows
+        if all(pd.isna(row_dict.get(col)) or str(row_dict.get(col, "")).strip() in self.null_variants for col in row_dict):
+            raise ValidationError("Row is completely empty")
+        
+        # Email is required and must be valid
+        email = str(row_dict.get("email", "")).strip()
+        if not email or email in self.null_variants:
+            raise ValidationError("Missing required field: email")
+        
+        if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+            raise ValidationError(f"Invalid email format: '{email}'")
+        
+        row_dict["email"] = email.lower()
+        
+        # Phone is optional but if present, just clean it (don't reject)
         if "phone" in row_dict and row_dict["phone"] and str(row_dict["phone"]).strip() not in self.null_variants:
             phone = str(row_dict["phone"]).strip()
-            
-            # Remove common formatting
             phone_clean = re.sub(r'[^\d+]', '', phone)
-            
-            if len(phone_clean) < 10:
-                raise ValidationError(f"Phone number must have at least 10 digits: '{phone}'")
-            
-            # Store cleaned phone
-            row_dict["phone"] = phone_clean
+            row_dict["phone"] = phone_clean if phone_clean else None
         
-        # Name validation
+        # Name is optional
         if "name" in row_dict:
-            name = str(row_dict["name"]).strip()
-            if len(name) < 2:
-                raise ValidationError("Name must be at least 2 characters long")
-            row_dict["name"] = name
-        
-        # Date validation for any date columns
-        date_columns = ['date', 'created_at', 'updated_at', 'birth_date']
-        for col in date_columns:
-            if col in row_dict and row_dict[col] and str(row_dict[col]).strip() not in self.null_variants:
-                date_str = str(row_dict[col]).strip()
-                parsed_date = await self.parse_date(date_str)
-                if parsed_date:
-                    row_dict[col] = parsed_date
-                else:
-                    raise ValidationError(f"Invalid date format in '{col}': '{date_str}'")
-        
-        # Numeric validation
-        numeric_columns = ['age', 'score', 'amount', 'price']
-        for col in numeric_columns:
-            if col in row_dict and row_dict[col] and str(row_dict[col]).strip() not in self.null_variants:
-                num_str = str(row_dict[col]).strip()
-                # Handle locale formats (1,000 vs 1.000)
-                num_clean = num_str.replace(',', '')
-                try:
-                    row_dict[col] = float(num_clean)
-                except ValueError:
-                    raise ValidationError(f"Invalid number format in '{col}': '{num_str}'")
+            name = str(row_dict.get("name", "")).strip()
+            row_dict["name"] = name if name and name not in self.null_variants else None
         
         return row_dict
     
