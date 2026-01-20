@@ -1304,6 +1304,20 @@ Jane Smith,jane@example.com,555-5678"
             onToggle={() => setConsoleExpanded(!consoleExpanded)}
           />
         </div>
+
+        {/* Footer */}
+        <footer className="mt-12 pb-8 text-center text-gray-500 text-sm">
+          <p>© {new Date().getFullYear()} PipeCheck. Built by{' '}
+            <a 
+              href="https://x.com/ai_armageddon" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:text-blue-600 hover:underline transition-colors"
+            >
+              @ai_armageddon
+            </a>
+          </p>
+        </footer>
       </div>
     </div>
   );
