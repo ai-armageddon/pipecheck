@@ -199,6 +199,103 @@ Return ONLY the value, nothing else. If you cannot determine a reasonable value,
         except Exception as e:
             logger.warning("AI inference failed", error=str(e))
             return None
+    
+    async def repair_file_content(self, file_content: str, error_message: str) -> Tuple[str, List[str], str]:
+        """
+        Use AI to repair malformed file content (delimiter issues, missing headers, etc.)
+        Returns (repaired_content, fixes_applied, detected_delimiter)
+        """
+        if not self.enabled:
+            return file_content, [], ","
+        
+        self._rate_limit()
+        
+        fixes_applied = []
+        
+        try:
+            # Get a sample of the file (first 20 lines)
+            lines = file_content.split('\n')[:20]
+            sample = '\n'.join(lines)
+            
+            prompt = f"""You are a CSV file repair assistant. The following file failed to parse with this error:
+"{error_message}"
+
+Here's a sample of the file content:
+```
+{sample}
+```
+
+Analyze this data and determine:
+1. What delimiter is being used (comma, tab, semicolon, pipe, etc.)
+2. If headers are missing, what they should be based on the data
+3. Any formatting issues that need fixing
+
+Return a JSON response with:
+{{
+  "delimiter": "<detected delimiter character>",
+  "has_headers": true/false,
+  "suggested_headers": ["col1", "col2", ...] (only if headers are missing),
+  "issues_found": ["issue1", "issue2", ...],
+  "can_be_fixed": true/false
+}}
+
+Return ONLY valid JSON, no explanation."""
+
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a CSV repair assistant. Return only valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=500
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            
+            # Clean up the response
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+                result_text = result_text.strip()
+            
+            analysis = json.loads(result_text)
+            logger.info("AI file analysis", analysis=analysis)
+            
+            delimiter = analysis.get("delimiter", ",")
+            has_headers = analysis.get("has_headers", True)
+            suggested_headers = analysis.get("suggested_headers", [])
+            issues = analysis.get("issues_found", [])
+            
+            repaired_content = file_content
+            
+            # Fix 1: Convert delimiter to comma if different
+            if delimiter and delimiter != ",":
+                # Replace the delimiter with comma
+                repaired_content = repaired_content.replace(delimiter, ",")
+                fixes_applied.append(f"AI converted delimiter from '{delimiter}' to comma")
+                logger.info("AI fixed delimiter", original=delimiter)
+            
+            # Fix 2: Add headers if missing
+            if not has_headers and suggested_headers:
+                header_line = ",".join(suggested_headers)
+                repaired_content = header_line + "\n" + repaired_content
+                fixes_applied.append(f"AI added missing headers: {', '.join(suggested_headers)}")
+                logger.info("AI added headers", headers=suggested_headers)
+            
+            # Log issues found
+            for issue in issues:
+                fixes_applied.append(f"AI detected: {issue}")
+            
+            return repaired_content, fixes_applied, ","
+            
+        except json.JSONDecodeError as e:
+            logger.warning("AI returned invalid JSON for file repair", error=str(e))
+            return file_content, [], ","
+        except Exception as e:
+            logger.warning("AI file repair failed", error=str(e))
+            return file_content, [], ","
 
 
 # Singleton instance

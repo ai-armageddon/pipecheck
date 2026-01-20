@@ -32,7 +32,39 @@ class CSVProcessor:
             
             # Detect encoding and read file
             encoding = await self.detect_encoding(file_path)
-            delimiter = await self.detect_delimiter(file_path, encoding)
+            
+            # Try to detect delimiter, use AI repair if it fails
+            try:
+                delimiter = await self.detect_delimiter(file_path, encoding)
+            except FileIntegrityError as e:
+                # Delimiter detection failed - try AI repair
+                if ai_fixer.enabled:
+                    logger.info("Attempting AI file repair", run_id=run_id, error=str(e))
+                    
+                    # Read the raw file content
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        file_content = f.read()
+                    
+                    # Let AI analyze and repair the file
+                    repaired_content, ai_fixes, delimiter = await ai_fixer.repair_file_content(file_content, str(e))
+                    
+                    if ai_fixes:
+                        logger.info("AI repaired file", run_id=run_id, fixes=ai_fixes)
+                        
+                        # Write repaired content back to file
+                        with open(file_path, 'w', encoding=encoding) as f:
+                            f.write(repaired_content)
+                        
+                        # Store AI fixes in run record
+                        run = self.db.query(IngestRun).filter(IngestRun.id == run_id).first()
+                        if run:
+                            run.error_message = "AI Repairs: " + "; ".join(ai_fixes)
+                            self.db.commit()
+                    else:
+                        # AI couldn't fix it either
+                        raise e
+                else:
+                    raise e
             
             # Read with proper parameters
             df = await self.read_file_with_options(file_path, encoding, delimiter)
