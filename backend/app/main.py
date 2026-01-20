@@ -177,16 +177,39 @@ async def upload_csv(
     
     run_id = str(uuid.uuid4())
     
-    file_content = await file.read()
-    file_hash = hashlib.sha256(file_content).hexdigest()
+    # Stream file to disk and compute hash in chunks (handles large files)
+    upload_dir = Path("uploads")
+    upload_dir.mkdir(exist_ok=True)
+    file_path = upload_dir / f"{run_id}_{file.filename}"
+    
+    file_hash = hashlib.sha256()
+    file_size = 0
+    chunk_size = 1024 * 1024  # 1MB chunks
+    
+    with open(file_path, "wb") as f:
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            f.write(chunk)
+            file_hash.update(chunk)
+            file_size += len(chunk)
+    
+    file_hash_hex = file_hash.hexdigest()
+    logger.info("File uploaded", run_id=run_id, filename=file.filename, size_mb=round(file_size / 1024 / 1024, 2))
     
     db = next(get_db())
     
     existing_run = db.query(IngestRun).filter(
-        IngestRun.file_hash == file_hash
+        IngestRun.file_hash == file_hash_hex
     ).first()
     
     if existing_run and not force:
+        # Clean up the file we just saved
+        try:
+            os.remove(file_path)
+        except:
+            pass
         logger.info("Duplicate file detected", run_id=run_id, existing_run_id=existing_run.id)
         return JSONResponse(
             status_code=200,
@@ -207,20 +230,13 @@ async def upload_csv(
     run = IngestRun(
         id=run_id,
         filename=file.filename,
-        file_hash=file_hash,
+        file_hash=file_hash_hex,
         status=RunStatus.PENDING,
         created_at=datetime.utcnow()
     )
     
     db.add(run)
     db.commit()
-    
-    upload_dir = Path("uploads")
-    upload_dir.mkdir(exist_ok=True)
-    
-    file_path = upload_dir / f"{run_id}_{file.filename}"
-    with open(file_path, "wb") as f:
-        f.write(file_content)
     
     active_runs[run_id] = {"status": "processing", "progress": 0}
     

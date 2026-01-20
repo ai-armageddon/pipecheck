@@ -340,23 +340,34 @@ function App() {
       uploadFile = new File([file], newName, { type: file.type });
     }
 
-    // Read file content for preview
-    const reader = new FileReader();
+    // Skip preview for large files (> 10MB) to prevent browser crash
+    const MAX_PREVIEW_SIZE = 10 * 1024 * 1024; // 10MB
     let fileContent = null;
-    reader.onload = (e) => {
-      fileContent = e.target.result;
-      setUploadedFileContent(fileContent);
-      setUploadedFileName(uploadFile.name);
-    };
-    reader.onerror = (e) => {
-      console.error('FileReader error:', e);
-    };
     
-    // Wait for file to be read before proceeding
-    await new Promise((resolve) => {
-      reader.onloadend = resolve;
-      reader.readAsText(uploadFile);
-    });
+    if (file.size <= MAX_PREVIEW_SIZE) {
+      // Read file content for preview
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        fileContent = e.target.result;
+        setUploadedFileContent(fileContent);
+        setUploadedFileName(uploadFile.name);
+      };
+      reader.onerror = (e) => {
+        console.error('FileReader error:', e);
+      };
+      
+      // Wait for file to be read before proceeding
+      await new Promise((resolve) => {
+        reader.onloadend = resolve;
+        reader.readAsText(uploadFile);
+      });
+    } else {
+      // Large file - show placeholder instead of full preview
+      const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+      setUploadedFileContent(`# Large File Preview Disabled\n# File: ${uploadFile.name}\n# Size: ${sizeMB} MB\n# Preview is disabled for files larger than 10MB to prevent browser crashes.\n# The file will still be processed normally.`);
+      setUploadedFileName(uploadFile.name);
+      addLog('info', `Large file detected (${sizeMB} MB), preview disabled`);
+    }
 
     soundManager.upload();
     const startTime = Date.now();
@@ -364,7 +375,7 @@ function App() {
     setProcessingTime(null);
     setUploading(true);
     setUploadProgress(0);
-    addLog('info', `Starting upload: ${uploadFile.name} (${(file.size / 1024).toFixed(1)} KB)`);
+    addLog('info', `Starting upload: ${uploadFile.name} (${file.size > 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + ' MB' : (file.size / 1024).toFixed(1) + ' KB'})`);
     
     const formData = new FormData();
     formData.append('file', uploadFile);
