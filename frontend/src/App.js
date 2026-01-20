@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, Terminal, HelpCircle, SkipForward } from 'lucide-react';
+import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, Terminal, HelpCircle, SkipForward, Volume2, VolumeX } from 'lucide-react';
 import axios from 'axios';
 import { Toaster, toast } from 'sonner';
 import { Progress } from './components/ui/progress';
 import Console from './Console';
 import CSVPreview from './components/CSVPreview';
+import soundManager from './lib/sounds';
 import './App.css';
 
 // Elapsed Timer Component
@@ -46,6 +47,7 @@ function App() {
   const [processingTime, setProcessingTime] = useState(null);
   const [uploadedFileContent, setUploadedFileContent] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState(null);
+  const [soundEnabled, setSoundEnabled] = useState(soundManager.enabled);
   const ws = useRef(null);
   const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
   const [csvText, setCsvText] = useState('');
@@ -186,6 +188,15 @@ function App() {
       runId
     };
     
+    // Play sound based on log level
+    if (level === 'error') {
+      soundManager.logError();
+    } else if (level === 'warn') {
+      soundManager.logWarning();
+    } else {
+      soundManager.log();
+    }
+    
     setConsoleLogs(prev => {
       const updated = [...prev, newLog];
       // Keep only last 1000 logs
@@ -271,6 +282,7 @@ function App() {
     };
     reader.readAsText(file);
 
+    soundManager.upload();
     const startTime = Date.now();
     setUploadStartTime(startTime);
     setProcessingTime(null);
@@ -479,6 +491,7 @@ function App() {
       return;
     }
 
+    soundManager.delete();
     try {
       await axios.delete(`http://localhost:8001/runs/${runId}`);
       
@@ -500,13 +513,24 @@ function App() {
   };
 
   const handleClearLogs = () => {
+    soundManager.click();
     setConsoleLogs([]);
   };
 
   const handleClearPersistedLogs = () => {
+    soundManager.delete();
     setConsoleLogs([]);
     localStorage.removeItem('csvConsoleLogs');
     toast.success('All logs cleared from storage');
+  };
+
+  const toggleSound = () => {
+    const newState = !soundEnabled;
+    setSoundEnabled(newState);
+    soundManager.setEnabled(newState);
+    if (newState) {
+      soundManager.click();
+    }
   };
 
   const handleDeleteAllRuns = async () => {
@@ -514,6 +538,7 @@ function App() {
       return;
     }
 
+    soundManager.delete();
     try {
       await axios.delete('http://localhost:8001/runs');
       
@@ -557,10 +582,13 @@ function App() {
           await fetchStats();
           
           if (run.status === 'completed') {
+            soundManager.uploadComplete();
             toast.success(`Processing complete! ${run.rows_inserted} rows inserted.`);
           } else if (run.status === 'partial_success') {
+            soundManager.warning();
             toast.warning(`Processing complete with errors. ${run.rows_inserted} inserted, ${run.errors_count} errors.`);
           } else {
+            soundManager.error();
             toast.error('Processing failed. Check the console for details.');
           }
         } else if (run.status === 'processing') {
@@ -688,6 +716,13 @@ function App() {
             title="What do the statuses mean?"
           >
             <HelpCircle className="w-5 h-5" />
+          </button>
+          <button
+            onClick={toggleSound}
+            className={`ml-2 p-2 rounded-lg transition-colors ${soundEnabled ? 'text-blue-500 hover:bg-blue-50' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+            title={soundEnabled ? "Sound effects on - click to mute" : "Sound effects off - click to enable"}
+          >
+            {soundEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
           </button>
         </header>
 

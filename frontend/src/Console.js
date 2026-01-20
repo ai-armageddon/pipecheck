@@ -102,7 +102,7 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
             className="p-1 text-gray-400 hover:text-white transition-colors"
             title={isExpanded ? "Minimize console" : "Expand console"}
           >
-            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
         </div>
       </div>
@@ -161,7 +161,7 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
 
       {/* Footer with auto-scroll toggle */}
       {isExpanded && (
-        <div className="bg-gray-900 px-3 py-1 border-t border-gray-800 flex items-center justify-between">
+        <div className="bg-gray-900 px-3 py-1 border-t border-gray-800 flex items-center justify-end">
           <label className="flex items-center text-xs text-gray-400 cursor-pointer">
             <input
               type="checkbox"
