@@ -1191,18 +1191,18 @@ Jane Smith,jane@example.com,555-5678"
                   </div>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full table-fixed">
                     <thead>
-                      <tr className="border-b">
-                        <th className="text-left py-2 px-3">Status</th>
-                        <th className="text-left py-2 px-3">Filename</th>
-                        <th className="text-left py-2 px-3">Created</th>
-                        <th className="text-right py-2 px-3">Rows</th>
-                        <th className="text-right py-2 px-3">Inserted</th>
-                        <th className="text-right py-2 px-3">Updated</th>
-                        <th className="text-right py-2 px-3">Errors</th>
-                        <th className="text-center py-2 px-3">Progress</th>
-                        <th className="text-center py-2 px-3">Actions</th>
+                      <tr className="border-b text-xs">
+                        <th className="text-left py-2 px-2 w-28">Status</th>
+                        <th className="text-left py-2 px-2 w-40 truncate">Filename</th>
+                        <th className="text-left py-2 px-2 w-24">Created</th>
+                        <th className="text-right py-2 px-1 w-14">Rows</th>
+                        <th className="text-right py-2 px-1 w-14">Ins.</th>
+                        <th className="text-right py-2 px-1 w-14">Upd.</th>
+                        <th className="text-right py-2 px-1 w-14">Err.</th>
+                        <th className="text-center py-2 px-1 w-16">Prog.</th>
+                        <th className="text-center py-2 px-1 w-12"></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1215,18 +1215,18 @@ Jane Smith,jane@example.com,555-5678"
                             fetchErrors(run.run_id);
                           }}
                         >
-                          <td className="py-3 px-3">
-                            <span className={getStatusBadgeClass(run.status)}>
+                          <td className="py-2 px-2">
+                            <span className={`${getStatusBadgeClass(run.status)} text-xs`}>
                               {getStatusIcon(run.status)}
-                              <span className="ml-1 capitalize">{run.status}</span>
+                              <span className="ml-1 capitalize hidden sm:inline">{run.status.replace('_', ' ')}</span>
                             </span>
                           </td>
-                          <td className={`${sizeClasses.table} px-3`}>{run.filename}</td>
-                          <td className={`${sizeClasses.table} px-3 text-gray-600`}>{formatDate(run.created_at)}</td>
-                          <td className={`${sizeClasses.table} px-3 text-right`}>{run.total_rows.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-3 text-right text-green-600`}>{run.rows_inserted.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-3 text-right text-blue-600`}>{run.rows_updated.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-3 text-right text-red-600`}>{run.errors_count}</td>
+                          <td className={`${sizeClasses.table} px-2 truncate`} title={run.filename}>{run.filename}</td>
+                          <td className={`${sizeClasses.table} px-2 text-gray-600 text-xs`}>{formatDate(run.created_at)}</td>
+                          <td className={`${sizeClasses.table} px-1 text-right`}>{run.total_rows.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-1 text-right text-green-600`}>{run.rows_inserted.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-1 text-right text-blue-600`}>{run.rows_updated.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-1 text-right text-red-600`}>{run.errors_count}</td>
                           <td className={`${sizeClasses.table} text-center`}>
                             {run.status === 'processing' ? (
                               <div className="flex items-center justify-center">
