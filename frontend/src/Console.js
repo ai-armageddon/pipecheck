@@ -56,13 +56,16 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
     }
   };
 
+  // Get last 3 logs for mini console
+  const recentLogs = logs.slice(-3);
+
   return (
-    <div className="bg-gray-900 rounded-lg shadow-lg overflow-hidden">
+    <div className="bg-black rounded-lg shadow-lg overflow-hidden border border-gray-800">
       {/* Header */}
-      <div className="bg-gray-800 px-4 py-2 flex items-center justify-between">
+      <div className="bg-gray-900 px-4 py-2 flex items-center justify-between border-b border-gray-800">
         <div className="flex items-center space-x-2">
           <Terminal className="w-4 h-4 text-green-400" />
-          <span className="text-sm font-medium text-gray-300">Processing Console</span>
+          <span className="text-sm font-medium text-gray-300">Console</span>
           <span className="text-xs text-gray-500">({logs.length} messages)</span>
           {persistedLogs > 0 && (
             <span className="text-xs text-green-400" title="Logs persisted in browser storage">
@@ -97,52 +100,77 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
           <button
             onClick={onToggle}
             className="p-1 text-gray-400 hover:text-white transition-colors"
+            title={isExpanded ? "Minimize console" : "Expand console"}
           >
             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
           </button>
         </div>
       </div>
 
-      {/* Console Content */}
+      {/* Mini Console - Always visible when collapsed */}
+      {!isExpanded && recentLogs.length > 0 && (
+        <div className="bg-black px-3 py-2 border-b border-gray-800">
+          {recentLogs.map((log, index) => (
+            <div key={index} className="flex items-start space-x-2 text-xs font-mono">
+              <span className="text-gray-500 shrink-0">{log.timestamp}</span>
+              <span className={`shrink-0 ${
+                log.level === 'error' ? 'text-red-400' :
+                log.level === 'warn' ? 'text-yellow-400' :
+                log.level === 'info' ? 'text-blue-400' :
+                'text-gray-400'
+              }`}>
+                {log.level.toUpperCase()}
+              </span>
+              <span className="text-gray-300 truncate">{log.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Full Console Content */}
       {isExpanded && (
-        <div className="border-t border-gray-700">
-          <div
-            ref={consoleRef}
-            onScroll={handleScroll}
-            className="bg-black p-4 h-64 overflow-y-auto font-mono text-sm"
-          >
-            {logs.length === 0 ? (
-              <div className="text-gray-500">Waiting for logs...</div>
-            ) : (
-              logs.map((log, index) => (
-                <div key={index} className="flex items-start space-x-2 mb-1">
-                  <span className="text-gray-500 text-xs flex-shrink-0">
-                    {log.timestamp}
-                  </span>
-                  <span className={`flex-shrink-0 ${getLogLevelClass(log.level)}`}>
-                    {log.level.toUpperCase()}:
+        <div 
+          ref={consoleRef}
+          onScroll={handleScroll}
+          className="bg-black p-3 h-64 overflow-y-auto font-mono text-xs"
+        >
+          {logs.length === 0 ? (
+            <div className="text-gray-500 text-center py-8">
+              No logs yet. Upload a file to see processing logs.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {logs.map((log, index) => (
+                <div key={index} className="flex items-start space-x-2">
+                  <span className="text-gray-500 shrink-0">{log.timestamp}</span>
+                  <span className={`shrink-0 ${
+                    log.level === 'error' ? 'text-red-400' :
+                    log.level === 'warn' ? 'text-yellow-400' :
+                    log.level === 'info' ? 'text-blue-400' :
+                    'text-gray-400'
+                  }`}>
+                    {log.level.toUpperCase()}
                   </span>
                   <span className="text-gray-300 break-all">{log.message}</span>
                 </div>
-              ))
-            )}
-          </div>
-          
-          {/* Auto-scroll indicator */}
-          <div className="bg-gray-800 px-4 py-1 flex items-center justify-between">
-            <label className="flex items-center space-x-2 text-xs text-gray-400">
-              <input
-                type="checkbox"
-                checked={autoScroll}
-                onChange={(e) => setAutoScroll(e.target.checked)}
-                className="rounded"
-              />
-              <span>Auto-scroll</span>
-            </label>
-            {!autoScroll && (
-              <span className="text-xs text-yellow-400">Auto-scroll paused</span>
-            )}
-          </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Footer with auto-scroll toggle */}
+      {isExpanded && (
+        <div className="bg-gray-900 px-3 py-1 border-t border-gray-800 flex items-center justify-between">
+          <label className="flex items-center text-xs text-gray-400 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoScroll}
+              onChange={(e) => setAutoScroll(e.target.checked)}
+              className="mr-2"
+            />
+            Auto-scroll
+          </label>
         </div>
       )}
     </div>

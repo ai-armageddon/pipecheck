@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, Terminal, HelpCircle, SkipForward } from 'lucide-react';
 import axios from 'axios';
 import { Toaster, toast } from 'sonner';
-import { Progress } from './Progress';
+import { Progress } from './components/ui/progress';
 import Console from './Console';
 import './App.css';
 
@@ -95,15 +95,25 @@ function App() {
     };
   }, []);
 
-  // Load logs from localStorage on mount and fetch recent logs from backend
+  // Load logs and console state from localStorage on mount and fetch recent logs from backend
   useEffect(() => {
     // First load from localStorage
     const savedLogs = localStorage.getItem('csvConsoleLogs');
+    const savedConsoleState = localStorage.getItem('csvConsoleExpanded');
+    
     if (savedLogs) {
       try {
         setConsoleLogs(JSON.parse(savedLogs));
       } catch (e) {
         console.error('Failed to parse saved logs:', e);
+      }
+    }
+    
+    if (savedConsoleState) {
+      try {
+        setConsoleExpanded(JSON.parse(savedConsoleState));
+      } catch (e) {
+        console.error('Failed to parse console state:', e);
       }
     }
     
@@ -140,6 +150,11 @@ function App() {
       localStorage.setItem('csvConsoleLogs', JSON.stringify(consoleLogs));
     }
   }, [consoleLogs]);
+
+  // Save console state to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('csvConsoleExpanded', JSON.stringify(consoleExpanded));
+  }, [consoleExpanded]);
 
   // Connect to run-specific WebSocket when uploading
   useEffect(() => {
