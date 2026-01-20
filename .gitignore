@@ -18,6 +18,9 @@ node_modules/
 *.sqlite
 *.sqlite3
 
+/examples
+/examples/*
+
 # Logs
 logs
 *.log
