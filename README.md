@@ -2,7 +2,9 @@
 
 An ops-grade CSV ingestion pipeline with deduplication, idempotency, and real-time monitoring dashboard.
 
-**Visit us at [pipecheck.dev](https://pipecheck.dev)**
+## 🚀 Live Demo
+
+**[pipecheck.dev](https://pipecheck.dev)** - Try it now!
 
 ## Features
 
