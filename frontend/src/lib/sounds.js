@@ -1,9 +1,9 @@
-// Sound effects using Web Audio API
+// Sound effects using Web Audio API - Pleasant UI sounds
 class SoundManager {
   constructor() {
     this.audioContext = null;
     this.enabled = true;
-    this.volume = 0.3;
+    this.volume = 0.15; // Lower volume for subtlety
     
     // Load preference from localStorage
     const savedEnabled = localStorage.getItem('csvSoundsEnabled');
@@ -28,8 +28,8 @@ class SoundManager {
     this.volume = Math.max(0, Math.min(1, volume));
   }
 
-  // Play a tone with given frequency and duration
-  playTone(frequency, duration = 0.1, type = 'sine') {
+  // Play a soft tone with envelope for pleasant sound
+  playTone(frequency, duration = 0.1, type = 'sine', attack = 0.01, decay = 0.05) {
     if (!this.enabled) return;
     
     try {
@@ -43,14 +43,26 @@ class SoundManager {
       oscillator.frequency.value = frequency;
       oscillator.type = type;
       
-      gainNode.gain.setValueAtTime(this.volume, ctx.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
+      // Smooth envelope for pleasant sound
+      const now = ctx.currentTime;
+      gainNode.gain.setValueAtTime(0, now);
+      gainNode.gain.linearRampToValueAtTime(this.volume, now + attack);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
       
-      oscillator.start(ctx.currentTime);
-      oscillator.stop(ctx.currentTime + duration);
+      oscillator.start(now);
+      oscillator.stop(now + duration);
     } catch (e) {
       console.warn('Sound playback failed:', e);
     }
+  }
+
+  // Play a chord (multiple frequencies at once)
+  playChord(frequencies, duration = 0.15) {
+    if (!this.enabled) return;
+    
+    frequencies.forEach(freq => {
+      this.playTone(freq, duration, 'sine', 0.01, 0.1);
+    });
   }
 
   // Play a sequence of tones
@@ -64,82 +76,96 @@ class SoundManager {
     });
   }
 
-  // Predefined sounds
+  // === UI Sounds ===
+  
+  // Soft click for buttons
   click() {
-    this.playTone(800, 0.05, 'square');
+    this.playTone(1200, 0.04, 'sine');
   }
 
+  // Subtle hover
   hover() {
+    this.playTone(800, 0.02, 'sine');
+  }
+
+  // Success - pleasant ascending arpeggio
+  success() {
+    this.playSequence([
+      { freq: 523, duration: 0.08 },  // C5
+      { freq: 659, duration: 0.08 },  // E5
+      { freq: 784, duration: 0.12 },  // G5
+    ], 0.07);
+  }
+
+  // Error - soft descending tone
+  error() {
+    this.playSequence([
+      { freq: 330, duration: 0.12 },  // E4
+      { freq: 262, duration: 0.15 },  // C4
+    ], 0.1);
+  }
+
+  // Warning - double beep
+  warning() {
+    this.playSequence([
+      { freq: 523, duration: 0.08 },
+      { freq: 523, duration: 0.08 },
+    ], 0.12);
+  }
+
+  // Upload start - soft whoosh up
+  upload() {
+    this.playSequence([
+      { freq: 400, duration: 0.06 },
+      { freq: 600, duration: 0.06 },
+      { freq: 800, duration: 0.08 },
+    ], 0.05);
+  }
+
+  // Upload complete - triumphant chord
+  uploadComplete() {
+    this.playChord([523, 659, 784], 0.2); // C major chord
+  }
+
+  // Processing tick
+  processing() {
     this.playTone(600, 0.03, 'sine');
   }
 
-  success() {
-    this.playSequence([
-      { freq: 523, duration: 0.1 },  // C5
-      { freq: 659, duration: 0.1 },  // E5
-      { freq: 784, duration: 0.15 }, // G5
-    ], 0.1);
-  }
-
-  error() {
-    this.playSequence([
-      { freq: 200, duration: 0.15, type: 'sawtooth' },
-      { freq: 150, duration: 0.2, type: 'sawtooth' },
-    ], 0.15);
-  }
-
-  warning() {
-    this.playSequence([
-      { freq: 440, duration: 0.1 },
-      { freq: 440, duration: 0.1 },
-    ], 0.15);
-  }
-
-  upload() {
-    this.playTone(440, 0.1, 'sine');
-  }
-
-  uploadComplete() {
-    this.playSequence([
-      { freq: 392, duration: 0.08 },  // G4
-      { freq: 523, duration: 0.08 },  // C5
-      { freq: 659, duration: 0.08 },  // E5
-      { freq: 784, duration: 0.15 },  // G5
-    ], 0.08);
-  }
-
-  processing() {
-    this.playTone(300, 0.05, 'triangle');
-  }
-
+  // Log entry - very subtle
   log() {
-    this.playTone(1000, 0.02, 'sine');
+    this.playTone(1000, 0.015, 'sine');
   }
 
+  // Log error - soft low tone
   logError() {
-    this.playTone(200, 0.08, 'square');
+    this.playTone(220, 0.06, 'sine');
   }
 
+  // Log warning - medium tone
   logWarning() {
-    this.playTone(400, 0.05, 'triangle');
+    this.playTone(440, 0.04, 'sine');
   }
 
+  // Delete - descending notes
   delete() {
     this.playSequence([
-      { freq: 400, duration: 0.08, type: 'square' },
-      { freq: 300, duration: 0.1, type: 'square' },
-    ], 0.08);
+      { freq: 600, duration: 0.06 },
+      { freq: 400, duration: 0.08 },
+    ], 0.06);
   }
 
+  // Toggle switch
   toggle() {
-    this.playTone(600, 0.04, 'sine');
+    this.playTone(880, 0.03, 'sine');
   }
 
+  // Notification - pleasant two-tone
   notification() {
     this.playSequence([
-      { freq: 880, duration: 0.1 },
-      { freq: 1100, duration: 0.15 },
-    ], 0.1);
+      { freq: 784, duration: 0.08 },  // G5
+      { freq: 1047, duration: 0.1 },  // C6
+    ], 0.08);
   }
 }
 
