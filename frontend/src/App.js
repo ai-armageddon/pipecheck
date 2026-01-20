@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut } from 'lucide-react';
+import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard } from 'lucide-react';
 import axios from 'axios';
 import './App.css';
 
@@ -11,6 +11,9 @@ function App() {
   const [errors, setErrors] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const [uiSize, setUiSize] = useState('normal'); // small, normal, large
+  const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
+  const [csvText, setCsvText] = useState('');
+  const [csvUrl, setCsvUrl] = useState('');
 
   useEffect(() => {
     fetchRuns();
@@ -21,6 +24,29 @@ function App() {
     }, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // Handle paste events for files
+  useEffect(() => {
+    const handlePaste = (e) => {
+      if (uploadMethod === 'file') {
+        const items = e.clipboardData?.items;
+        if (items) {
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].kind === 'file' && items[i].type === 'text/csv') {
+              const file = items[i].getAsFile();
+              if (file) {
+                handleFileUpload(file);
+                e.preventDefault();
+              }
+            }
+          }
+        }
+      }
+    };
+
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [uploadMethod]);
 
   const fetchRuns = async () => {
     try {
@@ -102,6 +128,55 @@ function App() {
     
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFileUpload(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handlePasteUpload = async () => {
+    if (!csvText.trim()) {
+      alert('Please paste CSV content first');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const blob = new Blob([csvText], { type: 'text/csv' });
+      const file = new File([blob], 'pasted-data.csv', { type: 'text/csv' });
+      await handleFileUpload(file);
+      setCsvText('');
+    } catch (error) {
+      console.error('Paste upload error:', error);
+      alert('Upload failed: ' + (error.response?.data?.detail || error.message));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleUrlUpload = async () => {
+    if (!csvUrl.trim()) {
+      alert('Please enter a URL first');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      // First fetch the CSV from URL
+      const response = await fetch(csvUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch: ${response.statusText}`);
+      }
+      
+      const csvContent = await response.text();
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const filename = csvUrl.split('/').pop() || 'url-data.csv';
+      const file = new File([blob], filename, { type: 'text/csv' });
+      
+      await handleFileUpload(file);
+      setCsvUrl('');
+    } catch (error) {
+      console.error('URL upload error:', error);
+      alert('Upload failed: ' + error.message);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -188,9 +263,12 @@ function App() {
     <div className={`min-h-screen bg-gray-50 ${sizeClasses.container}`}>
       <div className="container mx-auto px-4 py-8">
         <header className="mb-8 flex justify-between items-start">
-          <div>
-            <h1 className={`${sizeClasses.header} font-bold text-gray-900 mb-2`}>PipeCheck</h1>
-            <p className="text-gray-600">Ops-grade CSV ingestion pipeline with deduplication and idempotency</p>
+          <div className="flex items-center">
+            <img src="/fav-lg.png" alt="PipeCheck Logo" className={`${uiSize === 'small' ? 'w-8 h-8' : uiSize === 'large' ? 'w-12 h-12' : 'w-10 h-10'} mr-3`} />
+            <div>
+              <h1 className={`${sizeClasses.header} font-bold text-gray-900 mb-2`}>PipeCheck</h1>
+              <p className="text-gray-600">Ops-grade CSV ingestion pipeline with deduplication and idempotency</p>
+            </div>
           </div>
           <div className="flex items-center space-x-1 bg-white rounded-lg shadow p-1">
             <button
@@ -275,28 +353,109 @@ function App() {
             <div className="bg-white rounded-lg shadow mb-6">
               <div className={`${sizeClasses.card}`}>
                 <h2 className={`${sizeClasses.title} font-semibold mb-4`}>Upload CSV</h2>
-                <div
-                  className={`relative border-2 border-dashed rounded-lg ${uiSize === 'small' ? 'p-4' : uiSize === 'large' ? 'p-12' : 'p-8'} text-center transition-colors ${
-                    dragActive ? 'border-blue-400 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
-                  } ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                  onDragEnter={handleDrag}
-                  onDragLeave={handleDrag}
-                  onDragOver={handleDrag}
-                  onDrop={handleDrop}
-                >
-                  <input
-                    type="file"
-                    accept=".csv"
-                    onChange={(e) => e.target.files && handleFileUpload(e.target.files[0])}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    disabled={uploading}
-                  />
-                  <Upload className={`${uiSize === 'small' ? 'w-8 h-8' : uiSize === 'large' ? 'w-16 h-16' : 'w-12 h-12'} text-gray-400 mx-auto mb-4`} />
-                  <p className={`${uiSize === 'small' ? 'text-sm' : uiSize === 'large' ? 'text-xl' : 'text-lg'} font-medium text-gray-700`}>
-                    {uploading ? 'Uploading...' : 'Drop CSV file here or click to browse'}
-                  </p>
-                  <p className={`${sizeClasses.container} text-gray-500 mt-2`}>Supports CSV files with email, name, and optional fields</p>
+                
+                {/* Upload Method Tabs */}
+                <div className="flex space-x-1 mb-4">
+                  <button
+                    onClick={() => setUploadMethod('file')}
+                    className={`px-3 py-2 text-sm font-medium rounded-t-lg ${
+                      uploadMethod === 'file' 
+                        ? 'bg-blue-500 text-white' 
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    <Upload className="inline w-4 h-4 mr-1" />
+                    File
+                  </button>
+                  <button
+                    onClick={() => setUploadMethod('paste')}
+                    className={`px-3 py-2 text-sm font-medium rounded-t-lg ${
+                      uploadMethod === 'paste' 
+                        ? 'bg-blue-500 text-white' 
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    <Clipboard className="inline w-4 h-4 mr-1" />
+                    Paste Raw Data
+                  </button>
                 </div>
+
+                {/* File Upload Method */}
+                {uploadMethod === 'file' && (
+                  <div>
+                    <div
+                      className={`relative border-2 border-dashed rounded-lg ${uiSize === 'small' ? 'p-4' : uiSize === 'large' ? 'p-12' : 'p-8'} text-center transition-colors ${
+                        dragActive ? 'border-blue-400 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
+                      } ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                      onDragEnter={handleDrag}
+                      onDragLeave={handleDrag}
+                      onDragOver={handleDrag}
+                      onDrop={handleDrop}
+                    >
+                      <input
+                        type="file"
+                        accept=".csv"
+                        onChange={(e) => e.target.files && handleFileUpload(e.target.files[0])}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                        disabled={uploading}
+                      />
+                      <Upload className={`${uiSize === 'small' ? 'w-8 h-8' : uiSize === 'large' ? 'w-16 h-16' : 'w-12 h-12'} text-gray-400 mx-auto mb-4`} />
+                      <p className={`${uiSize === 'small' ? 'text-sm' : uiSize === 'large' ? 'text-xl' : 'text-lg'} font-medium text-gray-700`}>
+                        {uploading ? 'Uploading...' : 'Drop CSV file here or click to browse'}
+                      </p>
+                      <p className={`${sizeClasses.container} text-gray-500 mt-2`}>You can also paste a CSV file from clipboard (Ctrl+V / Cmd+V)</p>
+                    </div>
+                    
+                    {/* URL Input */}
+                    <div className="mt-4">
+                      <div className="flex items-center mb-2">
+                        <Link className="w-4 h-4 text-gray-500 mr-2" />
+                        <span className="text-sm text-gray-600">Or upload from URL:</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="url"
+                          value={csvUrl}
+                          onChange={(e) => setCsvUrl(e.target.value)}
+                          placeholder="https://example.com/data.csv"
+                          className="flex-1 p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          disabled={uploading}
+                        />
+                        <button
+                          onClick={handleUrlUpload}
+                          disabled={uploading || !csvUrl.trim()}
+                          className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {uploading ? 'Fetching...' : 'Fetch'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Paste Raw Data Method */}
+                {uploadMethod === 'paste' && (
+                  <div>
+                    <textarea
+                      value={csvText}
+                      onChange={(e) => setCsvText(e.target.value)}
+                      placeholder="Paste your raw CSV data here...
+Example:
+name,email,phone
+John Doe,john@example.com,555-1234
+Jane Smith,jane@example.com,555-5678"
+                      className="w-full h-48 p-3 border border-gray-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      disabled={uploading}
+                    />
+                    <button
+                      onClick={handlePasteUpload}
+                      disabled={uploading || !csvText.trim()}
+                      className="mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {uploading ? 'Processing...' : 'Upload CSV Data'}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
