@@ -1,0 +1,21 @@
+name,email,phone,address,city,state,zip,country
+John Doe,john.doe@example.com,555-123-4567,123 Main St,New York,NY,10001,USA
+Jane Smith,jane.smith@invalid-email,1234567890,456 Oak Ave,Los Angeles,CA,90210,USA
+Bob Johnson,bob.johnson@test.com,,789 Pine St,Chicago,IL,60601,
+Alice Williams,alice.williams@company.com,(555) 987-6543,321 Elm Dr,,TX,75201,USA
+,missing.name@test.com,555-555-5555,555 Maple St,Seattle,WA,98101,USA
+Charlie Brown,charlie.brown@email.com,555-ABC-DEF,654 Birch Rd,Boston,MA,02108,USA
+Diana Prince,diana@wayne.com,555.888.9999,1007 Mountain Dr,Metropolis,XX,99999,USA
+Eve Wilson,eve.wilson@domain.com,1-800-555-0199,123  ,Portland,OR,97201,USA
+Frank Miller,frank.miller@dc.com,555-0123,456   Avenue,Gotham,NJ,07001,USA
+Grace Lee,grace.lee@email.com,555-9999,789- Boulevard,Star City,CA,94016,USA
+Henry Ford,henry.ford@motor.com,313-555-7890, Rouge Plant   ,Dearborn,MI,48126,USA
+Ivy Stark,ivy.stark@stark.com,555-555-5555,200 Park Avenue,   ,NY,10166,USA
+Jack Ryan,jack.ryan@cia.com,703-555-0000,The Pentagon,Arlington,VA,22202,USA
+Kate Bishop,kate@hawkeye.net,212-555-0156,890 5th Avenue,New York   ,NY,10021,USA
+Luke Skywalker,luke@jedi.com,555-FORCE,Tatooine Desert,,Outer Rim,00000,USA
+Maria Hill,maria.hill@shield.gov,212-555-0100,Avengers Tower,New York,NY,10060,USA
+Nick Fury,nick.fury@shield.com,212-555-0101,Helicarrier Bay,   ,NY,10065,USA
+Natasha Romanoff,natasha@spy.com,555-007-007,Red Room,Moscow,,125009,Russia
+Tony Stark,tony@stark.com,1-800-IRON-MAN,10880 Malibu Point,Malibu,CA,90265,USA
+Wanda Maximoff,wanda@avengers.com,555-HEX-POWER,Westview,NJ,07076,USA
