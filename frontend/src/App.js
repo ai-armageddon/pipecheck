@@ -301,7 +301,10 @@ function App() {
       setUploadedFileContent(e.target.result);
       setUploadedFileName(uploadFile.name);
     };
-    reader.readAsText(file);
+    reader.onerror = (e) => {
+      console.error('FileReader error:', e);
+    };
+    reader.readAsText(uploadFile);
 
     soundManager.upload();
     const startTime = Date.now();
@@ -363,8 +366,7 @@ function App() {
       setUploadProgress(0);
       setCurrentUploadId(null);
       setProcessingTime(null);
-      setUploadedFileContent(null);
-      setUploadedFileName(null);
+      // Don't clear preview on error - user may want to see what they uploaded
     } finally {
       setUploading(false);
     }
