@@ -1,7 +1,24 @@
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
-from .models import RunStatus
+from .models import RunStatus, IngestRun
+
+class IngestRunSchema(BaseModel):
+    id: str
+    filename: str
+    status: RunStatus
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    total_rows: int = 0
+    rows_inserted: int = 0
+    rows_updated: int = 0
+    rows_skipped: int = 0
+    rows_rejected: int = 0
+    errors_count: int = 0
+    
+    class Config:
+        from_attributes = True
 
 class IngestRunResponse(BaseModel):
     run_id: str
@@ -13,6 +30,7 @@ class IngestRunResponse(BaseModel):
     rows_inserted: int = 0
     rows_updated: int = 0
     rows_skipped: int = 0
+    rows_rejected: int = 0
     errors_count: int = 0
     
     class Config:

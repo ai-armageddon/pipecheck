@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 import uuid
@@ -9,14 +9,17 @@ import io
 import sys
 import json
 import hashlib
+import logging
+import os
+from pathlib import Path
 from datetime import datetime
 import structlog
 from contextlib import asynccontextmanager
 from sqlalchemy import func
 from .database import SessionLocal, engine, Base
 from .models import IngestRun, DataRow, ErrorLog, RunStatus, ErrorCode
-from .schemas import IngestRunResponse, RunDetails, ErrorDetails, StatsResponse, IngestRun as IngestRunSchema
-from .pipeline import CSVProcessor
+from .schemas import IngestRunResponse, RunDetail, ErrorDetail, StatsResponse, IngestRun as IngestRunSchema
+from .pipeline import CSVProcessor, FileIntegrityError, ValidationError
 
 logging.basicConfig(
     format="%(message)s",
@@ -146,54 +149,62 @@ async def process_csv_file(run_id: str, file_path: str):
     db = next(get_db())
     processor = CSVProcessor(db)
     
+    correlation_id = run_id
+    logger = logger.bind(correlation_id=correlation_id, run_id=run_id)
+    
     try:
+        logger.info("Starting CSV processing", file_path=file_path)
+        
+        # Update status to processing
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
-        if not run:
-            logger.error("Run not found", run_id=run_id)
-            return
+        if run:
+            run.status = RunStatus.PROCESSING
+            db.commit()
         
-        run.status = RunStatus.PROCESSING
-        run.started_at = datetime.utcnow()
-        db.commit()
+        # Process the CSV with enhanced validation
+        results = await processor.process_csv(file_path, run_id)
         
-        logger.info("Starting CSV processing", run_id=run_id, file_path=file_path)
+        logger.info("CSV processing completed", **results)
         
-        result = await processor.process_csv(file_path, run_id)
-        
-        run.status = RunStatus.COMPLETED
-        run.completed_at = datetime.utcnow()
-        run.total_rows = result["total_rows"]
-        run.rows_inserted = result["rows_inserted"]
-        run.rows_updated = result["rows_updated"]
-        run.rows_skipped = result["rows_skipped"]
-        run.errors_count = result["errors_count"]
-        
-        db.commit()
-        
-        active_runs[run_id] = {"status": "completed", "progress": 100}
-        
-        logger.info("CSV processing completed", run_id=run_id, result=result)
-        
-    except Exception as e:
-        logger.error("CSV processing failed", run_id=run_id, error=str(e), exc_info=True)
-        
+    except FileIntegrityError as e:
+        logger.error("File integrity error", error=str(e))
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
         if run:
             run.status = RunStatus.FAILED
             run.completed_at = datetime.utcnow()
-            run.errors_count = run.errors_count + 1
-            
-            error_log = ErrorLog(
-                run_id=run_id,
-                row_index=-1,
-                error_code="PROCESSING_ERROR",
-                error_message=str(e),
-                raw_data=json.dumps({"file_path": file_path})
-            )
-            db.add(error_log)
+            run.error_message = str(e)
             db.commit()
-        
-        active_runs[run_id] = {"status": "failed", "progress": 0}
+            
+    except ValidationError as e:
+        logger.error("Validation error", error=str(e))
+        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+        if run:
+            run.status = RunStatus.FAILED
+            run.completed_at = datetime.utcnow()
+            run.error_message = str(e)
+            db.commit()
+            
+    except Exception as e:
+        logger.error("Unexpected error during processing", error=str(e), exc_info=True)
+        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+        if run:
+            run.status = RunStatus.FAILED
+            run.completed_at = datetime.utcnow()
+            run.error_message = f"Internal error: {str(e)}"
+            db.commit()
+            
+    finally:
+        # Clean up uploaded file
+        try:
+            os.remove(file_path)
+        except:
+            pass
+            
+        # Remove from active runs
+        if run_id in active_runs:
+            del active_runs[run_id]
+            
+        db.close()
 
 @app.get("/runs")
 async def get_runs():
@@ -370,3 +381,59 @@ async def export_all_data(format: str = "csv"):
         media_type=media_type,
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+@app.get("/errors/{run_id}/export")
+async def export_error_report(run_id: str, format: str = "csv"):
+    """Export detailed error report for rejected rows"""
+    db = next(get_db())
+    processor = CSVProcessor(db)
+    
+    try:
+        # Get error report
+        error_report = await processor.export_error_report(run_id)
+        
+        if not error_report:
+            raise HTTPException(status_code=404, detail="No errors found for this run")
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(error_report)
+        
+        # Flatten raw_data for better readability
+        if 'raw_data' in df.columns:
+            raw_data_df = pd.json_normalize(df['raw_data'])
+            raw_data_df.columns = [f'raw_{col}' for col in raw_data_df.columns]
+            df = pd.concat([df.drop('raw_data', axis=1), raw_data_df], axis=1)
+        
+        # Create file in memory
+        output = io.BytesIO()
+        
+        if format.lower() == "csv":
+            df.to_csv(output, index=False)
+            media_type = "text/csv"
+            filename = f"pipecheck_errors_{run_id[:8]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        elif format.lower() == "excel":
+            df.to_excel(output, index=False, engine='openpyxl')
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            filename = f"pipecheck_errors_{run_id[:8]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported format. Use 'csv' or 'excel'")
+        
+        output.seek(0)
+        
+        logger.info("Error report exported", run_id=run_id, format=format, rows=len(error_report))
+        
+        return StreamingResponse(
+            io.BytesIO(output.read()),
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        
+    finally:
+        db.close()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

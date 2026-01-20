@@ -10,6 +10,7 @@ class RunStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    PARTIAL_SUCCESS = "partial_success"
 
 class ErrorCode(str, enum.Enum):
     VALIDATION_ERROR = "VALIDATION_ERROR"
@@ -35,7 +36,9 @@ class IngestRun(Base):
     rows_inserted = Column(Integer, default=0)
     rows_updated = Column(Integer, default=0)
     rows_skipped = Column(Integer, default=0)
+    rows_rejected = Column(Integer, default=0)
     errors_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
 
 class DataRow(Base):
     __tablename__ = "data_rows"

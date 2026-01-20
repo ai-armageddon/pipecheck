@@ -50,7 +50,7 @@ function App() {
 
   const fetchRuns = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/runs');
+      const response = await axios.get('http://localhost:8001/runs');
       setRuns(response.data);
       if (response.data.length > 0 && !selectedRun) {
         setSelectedRun(response.data[0]);
@@ -62,7 +62,7 @@ function App() {
 
   const fetchStats = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/stats');
+      const response = await axios.get('http://localhost:8001/stats');
       setStats(response.data);
     } catch (error) {
       console.error('Error fetching stats:', error);
@@ -71,7 +71,7 @@ function App() {
 
   const fetchErrors = async (runId) => {
     try {
-      const response = await axios.get(`http://localhost:8000/runs/${runId}/errors`);
+      const response = await axios.get(`http://localhost:8001/runs/${runId}/errors`);
       setErrors(response.data);
     } catch (error) {
       console.error('Error fetching errors:', error);
@@ -79,8 +79,8 @@ function App() {
   };
 
   const handleFileUpload = async (file) => {
-    if (!file || !file.name.endsWith('.csv')) {
-      alert('Please upload a CSV file');
+    if (!file || !(file.name.endsWith('.csv') || file.name.endsWith(('.xlsx', '.xls', '.xlsm')))) {
+      alert('Please upload a CSV or Excel file');
       return;
     }
 
@@ -89,7 +89,7 @@ function App() {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:8000/upload', formData, {
+      const response = await axios.post('http://localhost:8001/upload', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -182,7 +182,7 @@ function App() {
 
   const handleExport = async (runId, format = 'csv') => {
     try {
-      const response = await axios.get(`http://localhost:8000/export/${runId}?format=${format}`, {
+      const response = await axios.get(`http://localhost:8001/export/${runId}?format=${format}`, {
         responseType: 'blob'
       });
       
@@ -200,9 +200,29 @@ function App() {
     }
   };
 
+  const handleExportErrors = async (runId, format = 'csv') => {
+    try {
+      const response = await axios.get(`http://localhost:8001/errors/${runId}/export?format=${format}`, {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', response.headers['content-disposition']?.split('filename=')[1]?.replace(/"/g, '') || `errors.${format}`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error export failed:', error);
+      alert('Error export failed: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
   const handleExportAll = async (format = 'csv') => {
     try {
-      const response = await axios.get(`http://localhost:8000/export/all?format=${format}`, {
+      const response = await axios.get(`http://localhost:8001/export/all?format=${format}`, {
         responseType: 'blob'
       });
       
@@ -265,6 +285,7 @@ function App() {
                       status === 'processing' ? 'status-processing' :
                       status === 'completed' ? 'status-completed' :
                       status === 'failed' ? 'status-failed' :
+                      status === 'partial_success' ? 'status-pending' :
                       'status-skipped';
     
     const sizeClass = uiScale <= 0.875 ? 'status-badge-small' :
@@ -548,7 +569,7 @@ Jane Smith,jane@example.com,555-5678"
                   </table>
                   {runs.length === 0 && (
                     <div className="text-center py-8 text-gray-500">
-                      No runs yet. Upload a CSV file to get started.
+                      No runs yet. Upload a CSV or Excel file to get started.
                     </div>
                   )}
                 </div>
@@ -623,6 +644,28 @@ Jane Smith,jane@example.com,555-5678"
                         >
                           <Download className="w-3 h-3 mr-1" />
                           Excel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {(selectedRun.status === 'partial_success' || selectedRun.status === 'failed') && (
+                    <div className="mt-4 pt-4 border-t">
+                      <h3 className="text-sm font-medium text-gray-700 mb-2">Export Error Report</h3>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleExportErrors(selectedRun.run_id, 'csv')}
+                          className="flex-1 flex items-center justify-center px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
+                        >
+                          <Download className="w-3 h-3 mr-1" />
+                          Errors CSV
+                        </button>
+                        <button
+                          onClick={() => handleExportErrors(selectedRun.run_id, 'excel')}
+                          className="flex-1 flex items-center justify-center px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
+                        >
+                          <Download className="w-3 h-3 mr-1" />
+                          Errors Excel
                         </button>
                       </div>
                     </div>
