@@ -527,29 +527,37 @@ function App() {
   };
 
   const handleDeleteRun = async (runId) => {
-    if (!window.confirm('Are you sure you want to delete this run and all its data?')) {
-      return;
-    }
-
-    soundManager.delete();
-    try {
-      await axios.delete(`http://localhost:8001/runs/${runId}`);
-      
-      // Refresh the runs list
-      await fetchRuns();
-      await fetchStats();
-      
-      // Clear selected run if it was deleted
-      if (selectedRun && selectedRun.run_id === runId) {
-        setSelectedRun(null);
-        setErrors([]);
+    toast('Delete this run?', {
+      description: 'This will permanently delete this run and all its data.',
+      action: {
+        label: 'Delete',
+        onClick: async () => {
+          soundManager.delete();
+          try {
+            await axios.delete(`http://localhost:8001/runs/${runId}`);
+            
+            // Refresh the runs list
+            await fetchRuns();
+            await fetchStats();
+            
+            // Clear selected run if it was deleted
+            if (selectedRun && selectedRun.run_id === runId) {
+              setSelectedRun(null);
+              setErrors([]);
+            }
+            
+            toast.success('Run deleted successfully');
+          } catch (error) {
+            console.error('Delete error:', error);
+            toast.error('Delete failed: ' + (error.response?.data?.detail || error.message));
+          }
+        }
+      },
+      cancel: {
+        label: 'Cancel',
+        onClick: () => {}
       }
-      
-      toast.success('Run deleted successfully');
-    } catch (error) {
-      console.error('Delete error:', error);
-      toast.error('Delete failed: ' + (error.response?.data?.detail || error.message));
-    }
+    });
   };
 
   const handleClearLogs = () => {
@@ -574,25 +582,33 @@ function App() {
   };
 
   const handleDeleteAllRuns = async () => {
-    if (!window.confirm('Are you sure you want to delete ALL runs and their data? This cannot be undone!')) {
-      return;
-    }
-
-    soundManager.delete();
-    try {
-      await axios.delete('http://localhost:8001/runs');
-      
-      // Clear all data
-      setRuns([]);
-      setSelectedRun(null);
-      setErrors([]);
-      await fetchStats();
-      
-      toast.success('All runs deleted successfully');
-    } catch (error) {
-      console.error('Delete all error:', error);
-      toast.error('Delete failed: ' + (error.response?.data?.detail || error.message));
-    }
+    toast('Delete ALL runs?', {
+      description: 'This will permanently delete ALL runs and their data. This cannot be undone!',
+      action: {
+        label: 'Delete All',
+        onClick: async () => {
+          soundManager.delete();
+          try {
+            await axios.delete('http://localhost:8001/runs');
+            
+            // Clear all data
+            setRuns([]);
+            setSelectedRun(null);
+            setErrors([]);
+            await fetchStats();
+            
+            toast.success('All runs deleted successfully');
+          } catch (error) {
+            console.error('Delete all error:', error);
+            toast.error('Delete failed: ' + (error.response?.data?.detail || error.message));
+          }
+        }
+      },
+      cancel: {
+        label: 'Cancel',
+        onClick: () => {}
+      }
+    });
   };
 
   const pollProcessingProgress = async (runId, startTime = null) => {
