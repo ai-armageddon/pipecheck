@@ -4,6 +4,7 @@ import axios from 'axios';
 import { Toaster, toast } from 'sonner';
 import { Progress } from './components/ui/progress';
 import Console from './Console';
+import CSVPreview from './components/CSVPreview';
 import './App.css';
 
 // Elapsed Timer Component
@@ -43,6 +44,8 @@ function App() {
   const [showStatusMeaning, setShowStatusMeaning] = useState(false);
   const [uploadStartTime, setUploadStartTime] = useState(null);
   const [processingTime, setProcessingTime] = useState(null);
+  const [uploadedFileContent, setUploadedFileContent] = useState(null);
+  const [uploadedFileName, setUploadedFileName] = useState(null);
   const ws = useRef(null);
   const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
   const [csvText, setCsvText] = useState('');
@@ -260,6 +263,14 @@ function App() {
       return;
     }
 
+    // Read file content for preview
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setUploadedFileContent(e.target.result);
+      setUploadedFileName(file.name);
+    };
+    reader.readAsText(file);
+
     const startTime = Date.now();
     setUploadStartTime(startTime);
     setProcessingTime(null);
@@ -314,6 +325,8 @@ function App() {
       setUploadProgress(0);
       setCurrentUploadId(null);
       setProcessingTime(null);
+      setUploadedFileContent(null);
+      setUploadedFileName(null);
     } finally {
       setUploading(false);
     }
@@ -345,6 +358,10 @@ function App() {
       return;
     }
 
+    // Set the preview data
+    setUploadedFileContent(csvText);
+    setUploadedFileName('pasted-data.csv');
+
     setUploading(true);
     try {
       const blob = new Blob([csvText], { type: 'text/csv' });
@@ -354,6 +371,8 @@ function App() {
     } catch (error) {
       console.error('Paste upload error:', error);
       toast.error('Upload failed: ' + (error.response?.data?.detail || error.message));
+      setUploadedFileContent(null);
+      setUploadedFileName(null);
     } finally {
       setUploading(false);
     }
@@ -374,8 +393,13 @@ function App() {
       }
       
       const csvContent = await response.text();
-      const blob = new Blob([csvContent], { type: 'text/csv' });
       const filename = csvUrl.split('/').pop() || 'url-data.csv';
+      
+      // Set the preview data
+      setUploadedFileContent(csvContent);
+      setUploadedFileName(filename);
+      
+      const blob = new Blob([csvContent], { type: 'text/csv' });
       const file = new File([blob], filename, { type: 'text/csv' });
       
       await handleFileUpload(file);
@@ -383,6 +407,8 @@ function App() {
     } catch (error) {
       console.error('URL upload error:', error);
       toast.error('Upload failed: ' + error.message);
+      setUploadedFileContent(null);
+      setUploadedFileName(null);
     } finally {
       setUploading(false);
     }
@@ -1164,6 +1190,17 @@ Jane Smith,jane@example.com,555-5678"
             )}
           </div>
         </div>
+
+        {/* CSV Preview */}
+        {uploadedFileContent && (
+          <div className="mt-6">
+            <CSVPreview 
+              data={uploadedFileContent} 
+              errors={errors}
+              filename={uploadedFileName}
+            />
+          </div>
+        )}
 
         {/* Real-time Console */}
         <div className="mt-6">
