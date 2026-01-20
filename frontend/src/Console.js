@@ -6,11 +6,24 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
   const [autoScroll, setAutoScroll] = useState(true);
   const [persistedLogs, setPersistedLogs] = useState(0);
 
+  // Auto-scroll to bottom when logs change or when expanded
   useEffect(() => {
     if (autoScroll && consoleRef.current) {
       consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
     }
   }, [logs, autoScroll]);
+
+  // Scroll to bottom when console is expanded
+  useEffect(() => {
+    if (isExpanded && consoleRef.current) {
+      // Small delay to ensure the console is rendered
+      setTimeout(() => {
+        if (consoleRef.current) {
+          consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+        }
+      }, 50);
+    }
+  }, [isExpanded]);
 
   useEffect(() => {
     // Check how many logs are persisted
