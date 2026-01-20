@@ -317,7 +317,8 @@ async def get_runs():
             "rows_inserted": run.rows_inserted,
             "rows_updated": run.rows_updated,
             "rows_skipped": run.rows_skipped,
-            "errors_count": run.errors_count
+            "errors_count": run.errors_count,
+            "error_message": run.error_message
         }
         for run in runs
     ]

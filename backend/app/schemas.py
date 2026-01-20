@@ -16,6 +16,7 @@ class IngestRunSchema(BaseModel):
     rows_skipped: int = 0
     rows_rejected: int = 0
     errors_count: int = 0
+    error_message: Optional[str] = None
     
     class Config:
         from_attributes = True

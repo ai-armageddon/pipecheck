@@ -1299,6 +1299,12 @@ Jane Smith,jane@example.com,555-5678"
                         <span className={`${sizeClasses.table}`}>{formatDate(selectedRun.completed_at)}</span>
                       </div>
                     )}
+                    {selectedRun.error_message && (
+                      <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded">
+                        <p className="text-xs text-red-600 font-medium">Error:</p>
+                        <p className="text-sm text-red-800">{selectedRun.error_message}</p>
+                      </div>
+                    )}
                     <hr />
                     <div className="grid grid-cols-2 gap-4">
                       <div className="text-center">
