@@ -1434,7 +1434,8 @@ Jane Smith,jane@example.com,555-5678"
               </svg>
               @jeremyboulerice
             </a>
-            |
+            {/* add margin to separator */}
+            <span className="mx-2">|</span>
             {/* Github - @ai-armageddon */}
             <a 
               href="https://github.com/ai-armageddon" 
