@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, Terminal, HelpCircle, SkipForward, Volume2, VolumeX } from 'lucide-react';
+import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, Terminal, HelpCircle, SkipForward, Volume2, VolumeX, Copy } from 'lucide-react';
 import axios from 'axios';
 import { Toaster, toast } from 'sonner';
 import { Progress } from './components/ui/progress';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './components/ui/dialog';
 import Console from './Console';
 import CSVPreview from './components/CSVPreview';
 import soundManager from './lib/sounds';
@@ -48,6 +49,7 @@ function App() {
   const [uploadedFileContent, setUploadedFileContent] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState(null);
   const [soundEnabled, setSoundEnabled] = useState(soundManager.enabled);
+  const [duplicateFileDialog, setDuplicateFileDialog] = useState({ open: false, file: null, existingRun: null });
   const ws = useRef(null);
   const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
   const [csvText, setCsvText] = useState('');
@@ -268,17 +270,36 @@ function App() {
     }
   };
 
-  const handleFileUpload = async (file) => {
-    if (!file || !(file.name.endsWith('.csv') || file.name.endsWith(('.xlsx', '.xls', '.xlsm')))) {
+  const handleFileUpload = async (file, forceUpload = false, versionSuffix = null) => {
+    if (!file || !(file.name.endsWith('.csv') || file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.name.endsWith('.xlsm'))) {
       toast.error('Please upload a CSV or Excel file');
       return;
+    }
+
+    // Check for duplicate filename (unless forced)
+    if (!forceUpload) {
+      const existingRun = runs.find(run => run.filename === file.name);
+      if (existingRun) {
+        setDuplicateFileDialog({ open: true, file, existingRun });
+        return;
+      }
+    }
+
+    // If version suffix provided, rename the file
+    let uploadFile = file;
+    if (versionSuffix) {
+      const nameParts = file.name.split('.');
+      const ext = nameParts.pop();
+      const baseName = nameParts.join('.');
+      const newName = `${baseName}_v${versionSuffix}.${ext}`;
+      uploadFile = new File([file], newName, { type: file.type });
     }
 
     // Read file content for preview
     const reader = new FileReader();
     reader.onload = (e) => {
       setUploadedFileContent(e.target.result);
-      setUploadedFileName(file.name);
+      setUploadedFileName(uploadFile.name);
     };
     reader.readAsText(file);
 
@@ -288,10 +309,10 @@ function App() {
     setProcessingTime(null);
     setUploading(true);
     setUploadProgress(0);
-    addLog('info', `Starting upload: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
+    addLog('info', `Starting upload: ${uploadFile.name} (${(file.size / 1024).toFixed(1)} KB)`);
     
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', uploadFile);
 
     try {
       const response = await axios.post('http://localhost:8001/upload', formData, {
@@ -611,6 +632,43 @@ function App() {
     });
   };
 
+  // Handle duplicate file dialog actions
+  const handleDuplicateOverwrite = async () => {
+    const { file, existingRun } = duplicateFileDialog;
+    setDuplicateFileDialog({ open: false, file: null, existingRun: null });
+    
+    // Delete the existing run first
+    try {
+      await axios.delete(`http://localhost:8001/runs/${existingRun.run_id}`);
+      await fetchRuns();
+      toast.success('Previous run deleted');
+    } catch (error) {
+      toast.error('Failed to delete previous run');
+      return;
+    }
+    
+    // Now upload the file
+    await handleFileUpload(file, true);
+  };
+
+  const handleDuplicateNewVersion = async () => {
+    const { file } = duplicateFileDialog;
+    setDuplicateFileDialog({ open: false, file: null, existingRun: null });
+    
+    // Find the next version number
+    const baseName = file.name.split('.')[0];
+    const existingVersions = runs.filter(run => 
+      run.filename.startsWith(baseName) && run.filename.includes('_v')
+    );
+    const nextVersion = existingVersions.length + 2; // +2 because original is v1
+    
+    await handleFileUpload(file, true, nextVersion);
+  };
+
+  const handleDuplicateCancel = () => {
+    setDuplicateFileDialog({ open: false, file: null, existingRun: null });
+  };
+
   const pollProcessingProgress = async (runId, startTime = null) => {
     const pollInterval = setInterval(async () => {
       try {
@@ -724,6 +782,57 @@ function App() {
         richColors
         closeButton
       />
+      
+      {/* Duplicate File Dialog */}
+      <Dialog open={duplicateFileDialog.open} onOpenChange={(open) => !open && handleDuplicateCancel()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Copy className="w-5 h-5 text-yellow-500" />
+              Duplicate File Detected
+            </DialogTitle>
+            <DialogDescription>
+              A file named <strong>{duplicateFileDialog.file?.name}</strong> has already been processed.
+              {duplicateFileDialog.existingRun && (
+                <span className="block mt-2 text-gray-600">
+                  Previous run: {new Date(duplicateFileDialog.existingRun.created_at).toLocaleString()} 
+                  ({duplicateFileDialog.existingRun.rows_inserted} rows inserted)
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <p className="text-sm text-gray-600 mb-4">What would you like to do?</p>
+            <div className="space-y-3">
+              <button
+                onClick={handleDuplicateOverwrite}
+                className="w-full p-3 text-left border rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <div className="font-medium text-gray-900">Overwrite existing</div>
+                <div className="text-sm text-gray-500">Delete the previous run and process this file again</div>
+              </button>
+              <button
+                onClick={handleDuplicateNewVersion}
+                className="w-full p-3 text-left border rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <div className="font-medium text-gray-900">Create new version</div>
+                <div className="text-sm text-gray-500">
+                  Save as {duplicateFileDialog.file?.name.replace(/\.([^.]+)$/, '_v2.$1')} and keep both
+                </div>
+              </button>
+            </div>
+          </div>
+          <DialogFooter>
+            <button
+              onClick={handleDuplicateCancel}
+              className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
+            >
+              Cancel
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="container mx-auto px-4 py-8">
         <header className="mb-8 flex justify-between items-start">
           <div className="flex items-center">
