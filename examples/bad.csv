@@ -1,0 +1,30 @@
+customer_id,email,name,phone,monthly_revenue,plan
+1001,john.smith@acmecorp.com,John Smith,555-123-4567,299.00,Professional
+1002,sarah.jones@techstart.io,Sarah Jones,555-234-5678,599.00,Enterprise
+1003,invalid.email.com,Mike Johnson,555-345-6789,299.00,Professional
+1004,robert.brown@innovate.co,Robert Brown,555-456-7890,899.00,Enterprise
+1005,emily.davis@cloudnine.com,,555-567-8901,299.00,Professional
+1006,michael.wilson@dataflow.io,Michael Wilson,555-678-9012,599.00,Professional
+1007,jennifer.garcia@nextsaas.com,Jennifer Garcia,555-789-0123,1299.00,Premium
+1008,,David Martinez,555-890-1234,299.00,Professional
+1009,lisa.anderson@startuplab.co,Lisa Anderson,555-901-2345,599.00,Enterprise
+1010,james.taylor@techventures.com,James Taylor,555-012-3456,N/A,Professional
+1001,duplicate.user@fakemail.com,Duplicate User,555-111-2222,299.00,Professional
+1011,patricia.thomas@webscale.io,Patricia Thomas,555-222-3333,899.00,Enterprise
+1012,christopher.moore@apicloud.com,Christopher Moore,555-333,299.00,Professional
+1013,amanda.jackson@devtools.co,Amanda Jackson,555-444-5555,599.00,Professional
+1014,matthew.white@platformx.io,Matthew White,555-555-6666,FREE_TRIAL,Enterprise
+1015,ashley.harris.biz,Ashley Harris,555-666-7777,299.00,Professional
+1016,joshua.martin@growth.io,Joshua Martin,555-777-8888,1299.00,Premium
+1017,stephanie.thompson@scaleit.com,Stephanie Thompson,555-888-9999,599.00,Enterprise
+1018,andrew.garcia@buildfaster.co,Andrew Garcia,555-999-0000,299.00,Professional
+1019,michelle.robinson@cloudservices.io,Michelle Robinson,555-000-1111,899.00,Enterprise
+1020,daniel.clark@automationpro.com,Daniel Clark,555-111-2223,599.00,Professional
+1021,rebecca.rodriguez@workflow.io,Rebecca Rodriguez,555-222-3334,299.00,Professional
+1022,ryan.lewis@enterprise-solutions.com,Ryan Lewis,555-333-4445,1299.00,Premium
+1023,laura.walker@datalytics.co,,555-444-5556,599.00,Enterprise
+1024,kevin.hall@smartsaas.io,Kevin Hall,555-55,299.00,Professional
+1025,@missingusername.com,Sarah Allen,555-666-7778,599.00,Professional
+1001,another.duplicate@company.io,Another Duplicate,555-777-8889,899.00,Enterprise
+1026,brian.young@cloudops.com,Brian Young,555-888-9990,299.00,Professional,extra_column_data
+1027,nicole.king@techstack.io,Nicole King,555-999-0001,599.00,Enterprise

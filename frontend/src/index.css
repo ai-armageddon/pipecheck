@@ -138,3 +138,206 @@ code {
   height: 100%;
   transition: transform 150ms ease-out;
 }
+
+/* Button and UI Animations */
+button {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+button:hover {
+  transform: translateY(-1px);
+}
+
+button:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* Card hover effects */
+.bg-white.rounded-lg.shadow {
+  transition: box-shadow 0.3s ease, transform 0.2s ease;
+}
+
+.bg-white.rounded-lg.shadow:hover {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+}
+
+/* Smooth transitions for status badges */
+.status-badge,
+.status-badge-small,
+.status-badge-large {
+  transition: all 0.2s ease;
+}
+
+/* Table row hover */
+table tbody tr {
+  transition: background-color 0.15s ease;
+}
+
+/* Input focus animations */
+input, textarea, select {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+}
+
+input:focus, textarea:focus, select:focus {
+  transform: scale(1.01);
+}
+
+/* Fade in animation */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Slide up animation */
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slideUp {
+  animation: slideUp 0.4s ease-out;
+}
+
+/* Pulse animation for processing */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Scale animation for buttons */
+@keyframes scaleIn {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-scaleIn {
+  animation: scaleIn 0.2s ease-out;
+}
+
+/* Smooth progress bar animation */
+.progress-bar-animated {
+  transition: width 0.5s ease-out;
+}
+
+/* Ripple effect for buttons */
+.ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  transition: width 0.3s ease, height 0.3s ease;
+}
+
+.ripple:active::after {
+  width: 200%;
+  height: 200%;
+}
+
+/* Smooth icon transitions */
+svg {
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+button:hover svg {
+  transform: scale(1.1);
+}
+
+/* Drag and drop zone animation */
+.border-dashed {
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+}
+
+.border-dashed:hover {
+  transform: scale(1.01);
+}
+
+/* Console slide animation */
+@keyframes slideDown {
+  from {
+    max-height: 0;
+    opacity: 0;
+  }
+  to {
+    max-height: 500px;
+    opacity: 1;
+  }
+}
+
+/* Tooltip animation */
+[title] {
+  position: relative;
+}
+
+/* Smooth scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a1a1a1;
+}
+
+/* Dark scrollbar for console */
+.bg-black::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+
+.bg-black::-webkit-scrollbar-thumb {
+  background: #4b5563;
+}
+
+.bg-black::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}

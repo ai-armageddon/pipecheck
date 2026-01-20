@@ -165,14 +165,16 @@ class CSVProcessor:
                 f.seek(0, 2)
                 file_size = f.tell()
             
+            # Use on_bad_lines='warn' to handle rows with extra/missing columns
             if file_size > 50 * 1024 * 1024:  # 50MB threshold
                 logger.warning("Large file detected, using streaming", file_size_mb=file_size / (1024*1024))
-                # For now, read normally but could implement streaming
                 df = pd.read_csv(file_path, encoding=encoding, delimiter=delimiter, 
-                                dtype=str, keep_default_na=False, na_values=self.null_variants)
+                                dtype=str, keep_default_na=False, na_values=self.null_variants,
+                                on_bad_lines='warn')
             else:
                 df = pd.read_csv(file_path, encoding=encoding, delimiter=delimiter,
-                                dtype=str, keep_default_na=False, na_values=self.null_variants)
+                                dtype=str, keep_default_na=False, na_values=self.null_variants,
+                                on_bad_lines='warn')
             
             return df
             
@@ -181,7 +183,16 @@ class CSVProcessor:
         except pd.errors.EmptyDataError:
             raise FileIntegrityError("No data found in file")
         except pd.errors.ParserError as e:
-            raise FileIntegrityError(f"Parse error: {str(e)}. File may be corrupted or have inconsistent formatting.")
+            # Try again with more lenient parsing
+            logger.warning("Initial parse failed, trying lenient mode", error=str(e))
+            try:
+                df = pd.read_csv(file_path, encoding=encoding, delimiter=delimiter,
+                                dtype=str, keep_default_na=False, na_values=self.null_variants,
+                                on_bad_lines='skip')
+                logger.info("Lenient parsing succeeded, some rows may have been skipped")
+                return df
+            except Exception as e2:
+                raise FileIntegrityError(f"Parse error: {str(e)}. File may be corrupted or have inconsistent formatting.")
     
     async def validate_headers(self, df: pd.DataFrame):
         """Check for duplicate headers, missing required headers"""
