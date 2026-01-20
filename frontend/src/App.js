@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2 } from 'lucide-react';
 import axios from 'axios';
 import { Toaster, toast } from 'sonner';
+import { Progress } from './Progress';
 import './App.css';
 
 function App() {
@@ -12,6 +13,9 @@ function App() {
   const [errors, setErrors] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const [uiScale, setUiScale] = useState(1); // 0.75, 0.875, 1, 1.125, 1.25, 1.375
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [processingProgress, setProcessingProgress] = useState({});
+  const [currentUploadId, setCurrentUploadId] = useState(null);
   const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
   const [csvText, setCsvText] = useState('');
   const [csvUrl, setCsvUrl] = useState('');
@@ -25,6 +29,17 @@ function App() {
     }, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // Poll for progress of processing runs
+  useEffect(() => {
+    const processingRuns = runs.filter(run => run.status === 'processing');
+    
+    processingRuns.forEach(run => {
+      if (!processingProgress[run.run_id]) {
+        pollProcessingProgress(run.run_id);
+      }
+    });
+  }, [runs]);
 
   // Handle paste events for files
   useEffect(() => {
@@ -86,6 +101,7 @@ function App() {
     }
 
     setUploading(true);
+    setUploadProgress(0);
     const formData = new FormData();
     formData.append('file', file);
 
@@ -94,21 +110,38 @@ function App() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+        onUploadProgress: (progressEvent) => {
+          const percentCompleted = Math.round(
+            (progressEvent.loaded * 100) / progressEvent.total
+          );
+          setUploadProgress(percentCompleted);
+        },
       });
+      
+      setCurrentUploadId(response.data.run_id);
+      setProcessingProgress({ [response.data.run_id]: 0 });
       
       await fetchRuns();
       await fetchStats();
       
       if (response.data.status === 'skipped') {
         toast.info('File already processed. Skipping duplicate.');
+        setUploadProgress(0);
+        setCurrentUploadId(null);
       } else if (response.data.status === 'pending') {
         toast.success('File uploaded successfully and is being processed.');
+        // Poll for progress updates
+        pollProcessingProgress(response.data.run_id);
       } else {
         toast.success('File uploaded successfully.');
+        setUploadProgress(0);
+        setCurrentUploadId(null);
       }
     } catch (error) {
       console.error('Upload error:', error);
       toast.error('Upload failed: ' + (error.response?.data?.detail || error.message));
+      setUploadProgress(0);
+      setCurrentUploadId(null);
     } finally {
       setUploading(false);
     }
@@ -287,6 +320,37 @@ function App() {
       console.error('Delete all error:', error);
       toast.error('Delete failed: ' + (error.response?.data?.detail || error.message));
     }
+  };
+
+  const pollProcessingProgress = async (runId) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await axios.get(`http://localhost:8001/runs/${runId}`);
+        const run = response.data;
+        
+        if (run.status === 'completed' || run.status === 'failed' || run.status === 'partial_success') {
+          clearInterval(pollInterval);
+          setProcessingProgress(prev => {
+            const newProgress = { ...prev };
+            delete newProgress[runId];
+            return newProgress;
+          });
+          setUploadProgress(0);
+          setCurrentUploadId(null);
+          await fetchRuns();
+          await fetchStats();
+        } else if (run.status === 'processing') {
+          // Calculate progress based on rows processed
+          const progress = run.total_rows > 0 
+            ? Math.round(((run.rows_inserted + run.rows_updated + run.errors_count + (run.rows_rejected || 0)) / run.total_rows) * 100)
+            : 0;
+          setProcessingProgress(prev => ({ ...prev, [runId]: progress }));
+        }
+      } catch (error) {
+        console.error('Error polling progress:', error);
+        clearInterval(pollInterval);
+      }
+    }, 1000);
   };
 
   const getStatusIcon = (status) => {
@@ -562,6 +626,38 @@ Jane Smith,jane@example.com,555-5678"
               </div>
             </div>
 
+            {/* Progress Bar */}
+            {(uploading || currentUploadId) && (
+              <div className="bg-white rounded-lg shadow mt-6">
+                <div className={`${sizeClasses.card}`}>
+                  <h3 className={`${sizeClasses.title} font-semibold mb-4`}>Upload Progress</h3>
+                  
+                  {uploadProgress < 100 && (
+                    <div className="mb-4">
+                      <div className="flex justify-between text-sm text-gray-600 mb-2">
+                        <span>Uploading file...</span>
+                        <span>{uploadProgress}%</span>
+                      </div>
+                      <Progress value={uploadProgress} className="h-2" />
+                    </div>
+                  )}
+                  
+                  {currentUploadId && processingProgress[currentUploadId] !== undefined && (
+                    <div>
+                      <div className="flex justify-between text-sm text-gray-600 mb-2">
+                        <span>Processing file...</span>
+                        <span>{processingProgress[currentUploadId] || 0}%</span>
+                      </div>
+                      <Progress value={processingProgress[currentUploadId] || 0} className="h-2" />
+                      <p className="text-xs text-gray-500 mt-2">
+                        Validating and processing your data. This may take a moment for large files.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="bg-white rounded-lg shadow">
               <div className={`${sizeClasses.card}`}>
                 <div className="flex justify-between items-center mb-4">
@@ -601,6 +697,7 @@ Jane Smith,jane@example.com,555-5678"
                         <th className="text-right py-2">Inserted</th>
                         <th className="text-right py-2">Updated</th>
                         <th className="text-right py-2">Errors</th>
+                        <th className="text-center py-2">Progress</th>
                         <th className="text-center py-2">Actions</th>
                       </tr>
                     </thead>
@@ -626,6 +723,27 @@ Jane Smith,jane@example.com,555-5678"
                           <td className={`${sizeClasses.table} text-right text-green-600`}>{run.rows_inserted.toLocaleString()}</td>
                           <td className={`${sizeClasses.table} text-right text-blue-600`}>{run.rows_updated.toLocaleString()}</td>
                           <td className={`${sizeClasses.table} text-right text-red-600`}>{run.errors_count}</td>
+                          <td className={`${sizeClasses.table} text-center`}>
+                            {run.status === 'processing' ? (
+                              <div className="flex items-center justify-center">
+                                <span className="text-xs text-gray-600 mr-2">
+                                  {processingProgress[run.run_id] || 0}%
+                                </span>
+                                <div className="w-16 bg-gray-200 rounded-full h-2">
+                                  <div 
+                                    className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                                    style={{ width: `${processingProgress[run.run_id] || 0}%` }}
+                                  />
+                                </div>
+                              </div>
+                            ) : run.status === 'completed' ? (
+                              <span className="text-green-600 text-xs">100%</span>
+                            ) : run.status === 'failed' ? (
+                              <span className="text-red-600 text-xs">Failed</span>
+                            ) : (
+                              <span className="text-gray-400 text-xs">-</span>
+                            )}
+                          </td>
                           <td className={`${sizeClasses.table} text-center`}>
                             <button
                               onClick={(e) => {
