@@ -4,8 +4,26 @@ module.exports = {
   content: [
     "./src/**/*.{js,jsx,ts,tsx}",
   ],
+  // The UI-scale slider builds class names at runtime (e.g. `text-${n}xl`),
+  // which Tailwind's scanner cannot see. Safelist every value it can produce.
+  safelist: [
+    'text-xs', 'text-sm', 'text-base', 'text-lg',
+    'text-xl', 'text-2xl', 'text-3xl', 'text-4xl',
+    'p-4', 'p-6', 'p-8',
+    'px-2', 'px-3', 'py-0', 'py-1',
+    'w-3', 'w-4', 'w-5', 'w-6',
+    'h-3', 'h-4', 'h-5', 'h-6',
+  ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', 'sans-serif'],
+        mono: ['JetBrains Mono', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', 'monospace'],
+      },
+      boxShadow: {
+        card: '0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 6px -1px rgb(15 23 42 / 0.04)',
+        'card-hover': '0 12px 32px -12px rgb(15 23 42 / 0.18), 0 4px 12px -4px rgb(15 23 42 / 0.08)',
+      },
       colors: {
         primary: {
           50: '#eff6ff',

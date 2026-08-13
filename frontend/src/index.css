@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -10,7 +12,7 @@
     --card-foreground: 222.2 84% 4.9%;
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
+    --primary: 243.4 75.4% 58.6%;
     --primary-foreground: 210 40% 98%;
     --secondary: 210 40% 96%;
     --secondary-foreground: 222.2 47.4% 11.2%;
@@ -22,8 +24,8 @@
     --destructive-foreground: 210 40% 98%;
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    --ring: 243.4 75.4% 58.6%;
+    --radius: 0.75rem;
   }
 
   .dark {
@@ -54,132 +56,173 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans;
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-      sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #f8fafc;
+    background-color: #f6f7fb;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   }
 }
 
 code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+  font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
 
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.625rem;
-  border-radius: 9999px;
-  font-size: 0.75rem;
-  font-weight: 500;
+/* ---------- Component primitives ---------- */
+
+@layer components {
+  .card {
+    @apply bg-white rounded-2xl border border-slate-200/70 shadow-card;
+    transition: box-shadow 0.25s ease, transform 0.2s ease, border-color 0.2s ease;
+  }
+
+  .card-hover:hover {
+    @apply shadow-card-hover border-slate-300/70;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg font-medium
+      transition-all duration-150 select-none
+      focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2
+      disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none;
+  }
+
+  .btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .btn:active:not(:disabled) {
+    transform: translateY(0) scale(0.98);
+  }
+
+  .btn-primary {
+    @apply btn bg-indigo-600 text-white shadow-sm shadow-indigo-600/20 hover:bg-indigo-700;
+  }
+
+  .btn-success {
+    @apply btn bg-emerald-600 text-white shadow-sm shadow-emerald-600/20 hover:bg-emerald-700;
+  }
+
+  .btn-danger {
+    @apply btn bg-rose-600 text-white shadow-sm shadow-rose-600/20 hover:bg-rose-700;
+  }
+
+  .btn-ghost {
+    @apply btn text-slate-500 hover:text-slate-800 hover:bg-slate-100;
+  }
+
+  .btn-outline {
+    @apply btn border border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 shadow-sm;
+  }
+
+  .icon-btn {
+    @apply inline-flex items-center justify-center rounded-lg text-slate-400
+      hover:text-slate-700 hover:bg-slate-100 transition-colors
+      focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500;
+  }
+
+  .input {
+    @apply rounded-lg border border-slate-200 bg-white text-slate-800 placeholder-slate-400 shadow-sm
+      transition-shadow duration-150
+      focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10
+      disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+
+  /* Segmented tab control */
+  .segmented {
+    @apply inline-flex items-center gap-1 rounded-xl bg-slate-100 p-1;
+  }
+
+  .segmented-item {
+    @apply inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium
+      text-slate-500 transition-all duration-150 hover:text-slate-800;
+  }
+
+  .segmented-item-active {
+    @apply bg-white text-slate-900 shadow-sm;
+  }
+
+  /* Section heading inside cards */
+  .card-title {
+    @apply font-semibold tracking-tight text-slate-900;
+  }
+
+  /* Micro label used for table headers / stat labels */
+  .label-micro {
+    @apply text-[11px] font-semibold uppercase tracking-wider text-slate-400;
+  }
 }
 
-.status-badge-small {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  border-radius: 9999px;
-  font-size: 0.75rem;
-  font-weight: 500;
-}
+/* ---------- Status badges ---------- */
 
-.status-badge-large {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.75rem;
-  border-radius: 9999px;
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
-.status-pending {
-  background-color: #fef3c7;
-  color: #92400e;
-}
-
-.status-processing {
-  background-color: #dbeafe;
-  color: #1e40af;
-}
-
-.status-completed {
-  background-color: #d1fae5;
-  color: #065f46;
-}
-
-.status-failed {
-  background-color: #fee2e2;
-  color: #991b1b;
-}
-
-.status-skipped {
-  background-color: #f3f4f6;
-  color: #374151;
-}
-
-/* Progress Bar Styles */
-.ProgressRoot {
-  position: relative;
-  overflow: hidden;
-  width: 100%;
-  height: 100%;
-  background-color: #e5e7eb;
-  border-radius: 9999px;
-}
-
-.ProgressIndicator {
-  background-color: #3b82f6;
-  width: 100%;
-  height: 100%;
-  transition: transform 150ms ease-out;
-}
-
-/* Button and UI Animations */
-button {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-button:hover {
-  transform: translateY(-1px);
-}
-
-button:active {
-  transform: translateY(0) scale(0.98);
-}
-
-/* Card hover effects */
-.bg-white.rounded-lg.shadow {
-  transition: box-shadow 0.3s ease, transform 0.2s ease;
-}
-
-.bg-white.rounded-lg.shadow:hover {
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
-}
-
-/* Smooth transitions for status badges */
 .status-badge,
 .status-badge-small,
 .status-badge-large {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 9999px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   transition: all 0.2s ease;
 }
+
+.status-badge {
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+}
+
+.status-badge-small {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.status-badge-large {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+.status-pending {
+  background-color: #fffbeb;
+  color: #b45309;
+  box-shadow: inset 0 0 0 1px #fde68a;
+}
+
+.status-processing {
+  background-color: #eef2ff;
+  color: #4f46e5;
+  box-shadow: inset 0 0 0 1px #c7d2fe;
+}
+
+.status-completed {
+  background-color: #ecfdf5;
+  color: #047857;
+  box-shadow: inset 0 0 0 1px #a7f3d0;
+}
+
+.status-failed {
+  background-color: #fff1f2;
+  color: #be123c;
+  box-shadow: inset 0 0 0 1px #fecdd3;
+}
+
+.status-skipped {
+  background-color: #f8fafc;
+  color: #475569;
+  box-shadow: inset 0 0 0 1px #e2e8f0;
+}
+
+/* ---------- Motion ---------- */
 
 /* Table row hover */
 table tbody tr {
   transition: background-color 0.15s ease;
-}
-
-/* Input focus animations */
-input, textarea, select {
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
-}
-
-input:focus, textarea:focus, select:focus {
-  transform: scale(1.01);
 }
 
 /* Fade in animation */
@@ -212,6 +255,22 @@ input:focus, textarea:focus, select:focus {
 
 .animate-slideUp {
   animation: slideUp 0.4s ease-out;
+}
+
+/* Gentle entrance used on cards */
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-rise {
+  animation: riseIn 0.35s ease-out both;
 }
 
 /* Pulse animation for processing */
@@ -249,46 +308,9 @@ input:focus, textarea:focus, select:focus {
   transition: width 0.5s ease-out;
 }
 
-/* Ripple effect for buttons */
-.ripple {
-  position: relative;
-  overflow: hidden;
-}
-
-.ripple::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 0;
-  height: 0;
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  transition: width 0.3s ease, height 0.3s ease;
-}
-
-.ripple:active::after {
-  width: 200%;
-  height: 200%;
-}
-
-/* Smooth icon transitions */
-svg {
-  transition: transform 0.2s ease, color 0.2s ease;
-}
-
-button:hover svg {
-  transform: scale(1.1);
-}
-
 /* Drag and drop zone animation */
 .border-dashed {
-  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
-}
-
-.border-dashed:hover {
-  transform: scale(1.01);
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 /* Console slide animation */
@@ -303,41 +325,52 @@ button:hover svg {
   }
 }
 
-/* Tooltip animation */
-[title] {
-  position: relative;
+/* Shimmering gradient used on the active progress indicator */
+@keyframes shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
 }
 
-/* Smooth scrollbar */
+.progress-shimmer {
+  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #6366f1 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* ---------- Scrollbars ---------- */
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 4px;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 4px;
+  background: #cbd5e1;
+  border-radius: 9999px;
   transition: background 0.2s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #a1a1a1;
+  background: #94a3b8;
 }
 
 /* Dark scrollbar for console */
-.bg-black::-webkit-scrollbar-track {
-  background: #1f2937;
+.console-dark::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-.bg-black::-webkit-scrollbar-thumb {
-  background: #4b5563;
+.console-dark::-webkit-scrollbar-thumb {
+  background: #334155;
 }
 
-.bg-black::-webkit-scrollbar-thumb:hover {
-  background: #6b7280;
+.console-dark::-webkit-scrollbar-thumb:hover {
+  background: #475569;
 }
