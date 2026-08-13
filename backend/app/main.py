@@ -17,7 +17,7 @@ import structlog
 from contextlib import asynccontextmanager
 from sqlalchemy import func
 import asyncio
-from .database import SessionLocal, engine, Base
+from .database import SessionLocal, engine, Base, DATABASE_URL, legacy_row_hash_index
 from .models import IngestRun, DataRow, ErrorLog, RunStatus, ErrorCode
 from .schemas import IngestRunResponse, RunDetail, ErrorDetail, StatsResponse, IngestRun as IngestRunSchema
 from .pipeline import CSVProcessor, FileIntegrityError, ValidationError
@@ -44,9 +44,11 @@ class ConnectionManager:
             self.run_connections[run_id].append(websocket)
 
     def disconnect(self, websocket: WebSocket, run_id: str = None):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
         if run_id and run_id in self.run_connections:
-            self.run_connections[run_id].remove(websocket)
+            if websocket in self.run_connections[run_id]:
+                self.run_connections[run_id].remove(websocket)
             if not self.run_connections[run_id]:
                 del self.run_connections[run_id]
 
@@ -54,27 +56,27 @@ class ConnectionManager:
         await websocket.send_text(message)
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
+        # Iterate over a copy: dropping a dead socket mid-loop would skip the
+        # connection that shifts into its place.
+        for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
-            except:
+            except Exception:
                 # Connection closed, remove it
-                self.active_connections.remove(connection)
+                self.disconnect(connection)
 
     async def broadcast_to_run(self, message: str, run_id: str):
         if run_id in self.run_connections:
             disconnected = []
-            for connection in self.run_connections[run_id]:
+            for connection in list(self.run_connections[run_id]):
                 try:
                     await connection.send_text(message)
-                except:
+                except Exception:
                     disconnected.append(connection)
             
             # Clean up disconnected connections
             for conn in disconnected:
-                self.run_connections[run_id].remove(conn)
-                if conn in self.active_connections:
-                    self.active_connections.remove(conn)
+                self.disconnect(conn, run_id)
 
 manager = ConnectionManager()
 
@@ -140,6 +142,13 @@ logger = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if legacy_row_hash_index():
+        logger.warning(
+            "Database predates the per-run row_hash constraint. Overlapping "
+            "uploads will still move rows between runs until it is recreated. "
+            "Stop the server, delete the database file, and restart.",
+            database_url=DATABASE_URL,
+        )
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -150,9 +159,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -160,6 +175,9 @@ app.add_middleware(
 )
 
 active_runs: Dict[str, Dict] = {}
+
+# Uploads are retained after processing so runs can be reprocessed.
+UPLOAD_DIR = Path("uploads")
 
 @app.get("/")
 async def root():
@@ -178,9 +196,11 @@ async def upload_csv(
     run_id = str(uuid.uuid4())
     
     # Stream file to disk and compute hash in chunks (handles large files)
-    upload_dir = Path("uploads")
+    upload_dir = UPLOAD_DIR
     upload_dir.mkdir(exist_ok=True)
-    file_path = upload_dir / f"{run_id}_{file.filename}"
+    # Keep only the base name: a crafted filename must not escape uploads/.
+    safe_name = Path(file.filename).name
+    file_path = upload_dir / f"{run_id}_{safe_name}"
     
     file_hash = hashlib.sha256()
     file_size = 0
@@ -268,6 +288,7 @@ async def process_csv_file(run_id: str, file_path: str):
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
         if run:
             run.status = RunStatus.PROCESSING
+            run.started_at = datetime.utcnow()
             db.commit()
             run_logger.info("Updated run status to processing")
         
@@ -304,19 +325,33 @@ async def process_csv_file(run_id: str, file_path: str):
             db.commit()
             
     finally:
-        # Clean up uploaded file
-        try:
-            os.remove(file_path)
-            run_logger.info("Cleaned up uploaded file", file_path=file_path)
-        except:
-            pass
-            
+        # The source file is deliberately retained so /runs/{id}/reprocess can
+        # re-run it. It is removed when the run itself is deleted.
         # Remove from active runs
         if run_id in active_runs:
             del active_runs[run_id]
-            
+
         db.close()
         run_logger.info("Background processing task completed")
+
+
+def stored_file_for(run_id: str) -> Optional[Path]:
+    """Locate the retained upload for a run, if it is still on disk."""
+    for candidate in UPLOAD_DIR.glob(f"{run_id}_*"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def discard_stored_files(run_ids: List[str]):
+    for run_id in run_ids:
+        stored = stored_file_for(run_id)
+        if not stored:
+            continue
+        try:
+            stored.unlink()
+        except OSError as e:
+            logger.warning("Could not remove stored upload", run_id=run_id, error=str(e))
 
 @app.get("/runs")
 async def get_runs():
@@ -334,6 +369,8 @@ async def get_runs():
             "rows_inserted": run.rows_inserted,
             "rows_updated": run.rows_updated,
             "rows_skipped": run.rows_skipped,
+            "rows_rejected": run.rows_rejected,
+            "rows_flagged": run.rows_flagged,
             "errors_count": run.errors_count,
             "error_message": run.error_message
         }
@@ -359,7 +396,10 @@ async def get_run(run_id: str):
         "rows_inserted": run.rows_inserted,
         "rows_updated": run.rows_updated,
         "rows_skipped": run.rows_skipped,
-        "errors_count": run.errors_count
+        "rows_rejected": run.rows_rejected,
+        "rows_flagged": run.rows_flagged,
+        "errors_count": run.errors_count,
+        "error_message": run.error_message
     }
 
 @app.get("/runs/{run_id}/errors")
@@ -433,6 +473,59 @@ async def get_run_data(run_id: str):
         "data": data
     }
 
+def export_ready(record: Dict) -> Dict:
+    """Rename internal markers so a spreadsheet shows which values were invented."""
+    fixes = record.pop("_fixes_applied", None)
+    needs_review = record.pop("_needs_review", False)
+    record["needs_review"] = "yes" if needs_review else ""
+    record["fixes_applied"] = "; ".join(fixes) if fixes else ""
+    return record
+
+
+def spreadsheet_response(df: pd.DataFrame, base_name: str, format: str) -> StreamingResponse:
+    """Serialise a frame as a CSV or Excel download."""
+    output = io.BytesIO()
+    
+    if format.lower() == "csv":
+        df.to_csv(output, index=False)
+        media_type = "text/csv"
+        filename = f"{base_name}.csv"
+    elif format.lower() == "excel":
+        df.to_excel(output, index=False, engine='openpyxl')
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"{base_name}.xlsx"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported format. Use 'csv' or 'excel'")
+    
+    output.seek(0)
+    
+    return StreamingResponse(
+        io.BytesIO(output.read()),
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+# Declared before /export/{run_id}: otherwise "all" is matched as a run id.
+@app.get("/export/all")
+async def export_all_data(format: str = "csv"):
+    db = next(get_db())
+    
+    # Get all successful data rows
+    data_rows = db.query(DataRow).all()
+    
+    if not data_rows:
+        raise HTTPException(status_code=404, detail="No data has been ingested yet")
+    
+    # Convert to DataFrame
+    data = []
+    for row in data_rows:
+        normalized_data = json.loads(row.normalized_data)
+        normalized_data['run_id'] = row.run_id  # Add run_id for reference
+        data.append(export_ready(normalized_data))
+    
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return spreadsheet_response(pd.DataFrame(data), f"pipecheck_all_export_{stamp}", format)
+
 @app.get("/export/{run_id}")
 async def export_data(run_id: str, format: str = "csv"):
     db = next(get_db())
@@ -449,75 +542,9 @@ async def export_data(run_id: str, format: str = "csv"):
         raise HTTPException(status_code=404, detail="No data found for this run")
     
     # Convert to DataFrame
-    data = []
-    for row in data_rows:
-        normalized_data = json.loads(row.normalized_data)
-        data.append(normalized_data)
+    data = [export_ready(json.loads(row.normalized_data)) for row in data_rows]
     
-    df = pd.DataFrame(data)
-    
-    # Create file in memory
-    output = io.BytesIO()
-    
-    if format.lower() == "csv":
-        df.to_csv(output, index=False)
-        media_type = "text/csv"
-        filename = f"pipecheck_export_{run_id}.csv"
-    elif format.lower() == "excel":
-        df.to_excel(output, index=False, engine='openpyxl')
-        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        filename = f"pipecheck_export_{run_id}.xlsx"
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported format. Use 'csv' or 'excel'")
-    
-    output.seek(0)
-    
-    return StreamingResponse(
-        io.BytesIO(output.read()),
-        media_type=media_type,
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-@app.get("/export/all")
-async def export_all_data(format: str = "csv"):
-    db = next(get_db())
-    
-    # Get all successful data rows
-    data_rows = db.query(DataRow).all()
-    
-    if not data_rows:
-        raise HTTPException(status_code=404, detail="No data found")
-    
-    # Convert to DataFrame
-    data = []
-    for row in data_rows:
-        normalized_data = json.loads(row.normalized_data)
-        normalized_data['run_id'] = row.run_id  # Add run_id for reference
-        data.append(normalized_data)
-    
-    df = pd.DataFrame(data)
-    
-    # Create file in memory
-    output = io.BytesIO()
-    
-    if format.lower() == "csv":
-        df.to_csv(output, index=False)
-        media_type = "text/csv"
-        filename = f"pipecheck_all_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    elif format.lower() == "excel":
-        df.to_excel(output, index=False, engine='openpyxl')
-        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        filename = f"pipecheck_all_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported format. Use 'csv' or 'excel'")
-    
-    output.seek(0)
-    
-    return StreamingResponse(
-        io.BytesIO(output.read()),
-        media_type=media_type,
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+    return spreadsheet_response(pd.DataFrame(data), f"pipecheck_export_{run_id}", format)
 
 @app.get("/errors/{run_id}/export")
 async def export_error_report(run_id: str, format: str = "csv"):
@@ -655,10 +682,13 @@ async def delete_run(run_id: str):
         db.delete(run)
         db.commit()
         
+        discard_stored_files([run_id])
         logger.info("Run deleted successfully", run_id=run_id)
         
         return {"message": "Run deleted successfully"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error("Failed to delete run", run_id=run_id, error=str(e))
@@ -678,13 +708,9 @@ async def reprocess_run(run_id: str, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=404, detail="Run not found")
         
         # Check if original file still exists
-        upload_dir = Path("uploads")
-        file_path = None
-        for f in upload_dir.glob(f"{run_id}_*"):
-            file_path = f
-            break
+        file_path = stored_file_for(run_id)
         
-        if not file_path or not file_path.exists():
+        if not file_path:
             raise HTTPException(status_code=404, detail="Original file not found. Please re-upload the file.")
         
         # Clear existing data for this run
@@ -698,6 +724,7 @@ async def reprocess_run(run_id: str, background_tasks: BackgroundTasks):
         run.rows_updated = 0
         run.rows_skipped = 0
         run.rows_rejected = 0
+        run.rows_flagged = 0
         run.errors_count = 0
         run.completed_at = None
         run.error_message = None
@@ -726,6 +753,8 @@ async def delete_all_runs():
     db = next(get_db())
     
     try:
+        run_ids = [run_id for (run_id,) in db.query(IngestRun.id).all()]
+        
         # Delete all data rows
         db.query(DataRow).delete()
         
@@ -737,7 +766,8 @@ async def delete_all_runs():
         
         db.commit()
         
-        logger.info("All runs deleted successfully")
+        discard_stored_files(run_ids)
+        logger.info("All runs deleted successfully", runs=len(run_ids))
         
         return {"message": "All runs deleted successfully"}
         
@@ -746,12 +776,5 @@ async def delete_all_runs():
         logger.error("Failed to delete all runs", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to delete all runs")
         
-    finally:
-        db.close()
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
     finally:
         db.close()
