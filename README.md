@@ -6,7 +6,7 @@ An **AI-powered CSV ingestion pipeline** with automatic data cleaning, error fix
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
 ![React](https://img.shields.io/badge/react-18+-blue.svg)
 
-## ✨ Features
+## Features
 
 ### Core Functionality
 - **Schema-Flexible Processing**: Accepts any CSV structure - no predefined schema required
@@ -14,12 +14,15 @@ An **AI-powered CSV ingestion pipeline** with automatic data cleaning, error fix
 - **Deduplication**: SHA-256 hashing prevents duplicate rows and files
 - **Idempotent Uploads**: Re-uploading same file is safely skipped
 - **Batch Processing**: Processes rows in batches of 1000 for efficiency
+- **No Silent Loss**: Lines the parser cannot use are rejected and reported, never dropped quietly
 
 ### AI-Powered Data Cleaning (Groq LLM)
 - **Row-Level Fixes**: AI automatically fixes validation errors per row
 - **File-Level Repairs**: Fixes delimiter issues and malformed headers
 - **Smart Inference**: Generates missing data from context (e.g., email from name)
 - **Fix Tracking**: All AI fixes are logged and displayed in the UI
+- **Review Flags**: Fixes that invent a value mark the row `needs_review` instead of
+  passing it off as source data (see [Invented values](#invented-values))
 
 ### Modern Dashboard
 - **Drag & Drop Upload**: Upload CSV/Excel files with drag-drop or click
@@ -45,10 +48,10 @@ An **AI-powered CSV ingestion pipeline** with automatic data cleaning, error fix
 - **WebSocket Updates**: Real-time status and progress
 - **Error Tracking**: Detailed error logs with row indices
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
-- Python 3.11+
+- Python 3.11 or 3.12 (the pinned `pandas`/`pydantic` builds have no wheels for 3.13+)
 - Node.js 18+
 - Groq API Key (optional, for AI features)
 
@@ -57,10 +60,11 @@ An **AI-powered CSV ingestion pipeline** with automatic data cleaning, error fix
 ```bash
 # Clone repository
 git clone https://github.com/ai-armageddon/pipecheck.git
-cd CSV-Magic
+cd pipecheck
 
 # Backend setup
 cd backend
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # Create .env file for AI features (optional)
@@ -84,7 +88,37 @@ docker-compose up -d
 # Open http://localhost:3000
 ```
 
-## 📡 API Reference
+### PM2 (Alternative)
+
+Runs the API under uvicorn and serves the production frontend build:
+
+```bash
+cd frontend && npm install && CI=false npx react-scripts build && cd ..
+pm2 start ecosystem.config.js
+# Open http://localhost:3000
+```
+
+| Command | Purpose |
+|---------|---------|
+| `pm2 logs pipecheck-api` | Tail backend logs |
+| `pm2 restart pipecheck-api` | Apply backend changes |
+| `pm2 restart pipecheck-web` | Apply a **rebuilt** frontend |
+| `pm2 stop pipecheck-api pipecheck-web` | Stop both |
+| `pm2 save` | Persist across reboots (with `pm2 startup`) |
+
+`pipecheck-web` serves a static build, so rebuild before restarting it after frontend
+changes. Both processes bind to `127.0.0.1`; see the security note below before
+exposing them.
+
+### Running the tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest
+```
+
+## API Reference
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -105,7 +139,7 @@ docker-compose up -d
 | `WS` | `/ws` | Global WebSocket for logs |
 | `WS` | `/ws/{run_id}` | Run-specific WebSocket |
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
@@ -139,7 +173,7 @@ docker-compose up -d
 8. **Storage**: Insert/update based on hash comparison
 9. **Reporting**: Real-time progress via WebSocket
 
-## 🗄️ Database Schema
+## Database Schema
 
 ### `ingest_runs`
 | Column | Type | Description |
@@ -152,20 +186,35 @@ docker-compose up -d
 | `rows_inserted` | Integer | New rows added |
 | `rows_updated` | Integer | Existing rows updated |
 | `rows_skipped` | Integer | Duplicate rows skipped |
-| `rows_rejected` | Integer | Invalid rows rejected |
+| `rows_rejected` | Integer | Invalid or unparseable rows rejected |
+| `rows_flagged` | Integer | Rows kept but repaired with invented values |
+| `errors_count` | Integer | Entries written to `error_logs` for this run |
 | `error_message` | Text | Error details or AI fixes applied |
 | `created_at` | DateTime | Upload time |
+| `started_at` | DateTime | Processing start time |
 | `completed_at` | DateTime | Processing end time |
+
+A run is `completed` only when nothing was rejected and nothing was flagged.
+Otherwise it is `partial_success`, which still contains data and is exportable.
 
 ### `data_rows`
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | Integer | Primary key |
 | `run_id` | UUID | Associated run |
-| `row_index` | Integer | Original row number |
-| `row_hash` | String | SHA-256 of normalized data |
+| `row_index` | Integer | Zero-based row number within the source file |
+| `row_hash` | String | SHA-256 of normalized data, unique **per run** |
 | `normalized_data` | JSON | Cleaned/processed data |
 | `raw_data` | JSON | Original row data |
+
+`row_hash` is unique per `(run_id, row_hash)`, so every run keeps a complete,
+independently exportable snapshot. Rows already seen in an earlier run are
+counted as `rows_updated` without being taken away from that run.
+
+> **Upgrading an existing database:** versions before this change made `row_hash`
+> globally unique, which let a later upload move rows off an older run.
+> `create_all()` cannot rewrite that constraint, so the server logs a warning at
+> startup if it is still present. Delete the SQLite file to recreate the schema.
 
 ### `error_logs`
 | Column | Type | Description |
@@ -177,7 +226,14 @@ docker-compose up -d
 | `error_message` | String | Human-readable error |
 | `raw_data` | JSON | Problematic row data |
 
-## 🤖 AI Features (Groq Integration)
+| Error code | Meaning |
+|------------|---------|
+| `MALFORMED_ROW` | Line could not be parsed (e.g. extra fields) and was not imported |
+| `VALIDATION_ERROR` | Row was parsed but rejected, e.g. completely empty |
+| `NEEDS_REVIEW` | Row was imported after a fix that invented a value |
+| `PROCESSING_ERROR` | Unexpected failure while handling the row |
+
+## AI Features (Groq Integration)
 
 ### Row-Level Fixing
 When validation fails, the AI attempts to fix:
@@ -192,6 +248,23 @@ For file structure issues:
 - **Header generation**: Creates missing headers
 - **Format repair**: Fixes malformed CSV structure
 
+### Invented values
+
+Some repairs cannot be derived from the file — they are guesses. Inserting an `@`
+into `invalid.email.com` produces `invalid@email.com`, which may be a real mailbox
+belonging to someone else; a phone number missing an area code gets a placeholder
+`000`. These rows are still imported, but they are marked so a guess is never
+mistaken for source data:
+
+- `normalized_data._needs_review` is set to `true`
+- a `NEEDS_REVIEW` entry is written to `error_logs` listing what was invented
+- the run reports `rows_flagged` and its status becomes `partial_success`
+- exports gain `needs_review` and `fixes_applied` columns
+- the dashboard shows an amber flag on the run, the row, and the preview
+
+Deterministic cleanup — trimming whitespace, lowercasing an email, stripping
+punctuation from a phone number — is not flagged, because nothing is invented.
+
 ### Configuration
 ```bash
 # .env file
@@ -200,10 +273,10 @@ GROQ_API_KEY=your_groq_api_key_here
 
 The AI uses `llama-3.1-8b-instant` model with rate limiting (0.5s between calls).
 
-## 📁 Project Structure
+## Project Structure
 
 ```
-CSV-Magic/
+pipecheck/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI app, routes, WebSocket
@@ -212,27 +285,31 @@ CSV-Magic/
 │   │   ├── pipeline.py      # CSV processing logic
 │   │   ├── ai_fixer.py      # Groq AI integration
 │   │   └── database.py      # Database config
-│   ├── uploads/             # Temporary file storage
-│   ├── requirements.txt
+│   ├── tests/               # pytest suite
+│   ├── uploads/             # Retained source files (for reprocess)
+│   ├── requirements.txt     # Runtime deps (single source of truth)
+│   ├── requirements-dev.txt # Runtime deps + test tooling
 │   └── .env                 # API keys (not in git)
 ├── frontend/
 │   ├── src/
 │   │   ├── App.js           # Main React component
-│   │   ├── Console.jsx      # Real-time log console
+│   │   ├── Console.js       # Real-time log console
 │   │   ├── components/
 │   │   │   ├── CSVPreview.jsx    # Data preview with tabs
 │   │   │   └── ui/               # shadcn/ui components
 │   │   └── lib/
+│   │       ├── api.js       # API base URL (REACT_APP_API_URL)
 │   │       └── sounds.js    # Audio feedback
 │   ├── package.json
 │   └── tailwind.config.js
 ├── data/
 │   └── bad.csv              # Test data with errors
 ├── docker-compose.yml
+├── LICENSE
 └── README.md
 ```
 
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -240,13 +317,19 @@ CSV-Magic/
 |----------|-------------|---------|
 | `GROQ_API_KEY` | Groq API key for AI features | None (AI disabled) |
 | `DATABASE_URL` | Database connection string | `sqlite:///./pipecheck.db` |
+| `CORS_ORIGINS` | Comma-separated allowed browser origins | `http://localhost:3000` |
+| `REACT_APP_API_URL` | Backend URL the frontend calls (build-time) | `http://localhost:8001` |
 
 ### Large File Handling
 - **Backend**: Streams uploads in 1MB chunks
 - **Frontend**: Preview disabled for files >10MB
 - **Processing**: Batches of 1000 rows
 
-## 📊 Monitoring
+### Disk Usage
+Uploaded files are kept in `backend/uploads/` so a run can be reprocessed. They
+are deleted when the run is deleted (`DELETE /runs/{id}` or `DELETE /runs`).
+
+## Monitoring
 
 ### Backend Logs
 ```bash
@@ -263,9 +346,12 @@ The dashboard includes a real-time console showing:
 
 Logs persist in localStorage across page refreshes.
 
-## 🧪 Testing
+## Testing
 
 ```bash
+# Automated suite (pipeline + API)
+cd backend && pytest
+
 # Test with sample bad data
 curl -X POST "http://localhost:8001/upload" \
   -F "file=@data/bad.csv"
@@ -278,7 +364,7 @@ curl -X POST "http://localhost:8001/upload" \
 curl -X POST "http://localhost:8001/runs/{run_id}/reprocess"
 ```
 
-## 🚀 Production Deployment
+## Production Deployment
 
 ### Recommendations
 - **Database**: PostgreSQL for production
@@ -288,18 +374,22 @@ curl -X POST "http://localhost:8001/runs/{run_id}/reprocess"
 - **Monitoring**: Prometheus + Grafana
 
 ### Security Checklist
-- [ ] Set secure `CORS_ORIGINS`
+- [x] `CORS_ORIGINS` is configurable (defaults to `http://localhost:3000`)
+- [x] Uploaded filenames are reduced to their base name before touching disk
 - [ ] Enable HTTPS
 - [ ] Add rate limiting
 - [ ] Implement authentication
-- [ ] Sanitize all inputs
+- [ ] Add an upload size limit
 - [ ] Rotate API keys
 
-## 📝 License
+> The API is unauthenticated: anyone who can reach it can upload files and delete
+> every run. Do not expose it beyond localhost without putting auth in front.
+
+## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
-## 🙏 Credits
+## Credits
 
 - **FastAPI** - Modern Python web framework
 - **React** - UI library
