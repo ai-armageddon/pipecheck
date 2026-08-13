@@ -28,19 +28,22 @@ const PaginationLink = ({
   className,
   isActive,
   size = "default",
+  children,
   ...props
 }) => (
   <a
     aria-current={isActive ? "page" : undefined}
-    className={`inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 cursor-pointer select-none
+    className={`inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:pointer-events-none disabled:opacity-50 cursor-pointer select-none
       ${isActive 
-        ? "bg-blue-500 text-white hover:bg-blue-600" 
-        : "hover:bg-gray-100 hover:text-gray-900"
+        ? "bg-indigo-600 text-white shadow-sm hover:bg-indigo-700" 
+        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
       }
       ${size === "default" ? "h-9 w-9" : "h-8 px-3"}
       ${className || ""}`}
     {...props}
-  />
+  >
+    {children}
+  </a>
 )
 PaginationLink.displayName = "PaginationLink"
 

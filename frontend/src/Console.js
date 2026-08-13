@@ -54,49 +54,48 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
     // You could add a toast notification here
   };
 
-  const getLogLevelClass = (level) => {
-    switch (level) {
-      case 'error':
-        return 'text-red-400';
-      case 'warn':
-        return 'text-yellow-400';
-      case 'info':
-        return 'text-blue-400';
-      case 'debug':
-        return 'text-gray-400';
-      default:
-        return 'text-gray-300';
-    }
-  };
-
   // Get last 3 logs for mini console
   const recentLogs = logs.slice(-3);
 
+  const levelColor = (level) => (
+    level === 'error' ? 'text-rose-400' :
+    level === 'warn' ? 'text-amber-400' :
+    level === 'info' ? 'text-sky-400' :
+    'text-slate-400'
+  );
+
   return (
-    <div className="bg-black rounded-lg shadow-lg overflow-hidden border border-gray-800">
+    <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-lg shadow-slate-900/20">
       {/* Header */}
-      <div className="bg-gray-900 px-4 py-2 flex items-center justify-between border-b border-gray-800">
-        <div className="flex items-center space-x-2">
-          <Terminal className="w-4 h-4 text-green-400" />
-          <span className="text-sm font-medium text-gray-300">Console</span>
-          <span className="text-xs text-gray-500">({logs.length} messages)</span>
-          {persistedLogs > 0 && (
-            <span className="text-xs text-green-400" title="Logs persisted in browser storage">
-              ● {persistedLogs} saved
-            </span>
-          )}
+      <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/80 px-4 py-2.5">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-rose-500/80" />
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-500/80" />
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/80" />
+          </div>
+          <div className="flex items-center gap-2">
+            <Terminal className="w-4 h-4 text-emerald-400" />
+            <span className="text-sm font-medium text-slate-200">Console</span>
+            <span className="text-xs text-slate-500">({logs.length} messages)</span>
+            {persistedLogs > 0 && (
+              <span className="text-xs text-emerald-400" title="Logs persisted in browser storage">
+                ● {persistedLogs} saved
+              </span>
+            )}
+          </div>
         </div>
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center gap-1">
           <button
             onClick={copyLogs}
-            className="p-1 text-gray-400 hover:text-white transition-colors"
+            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100"
             title="Copy logs"
           >
             <Copy className="w-4 h-4" />
           </button>
           <button
             onClick={onClear}
-            className="p-1 text-gray-400 hover:text-white transition-colors"
+            className="rounded-md px-2 py-1 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100"
             title="Clear current logs"
           >
             Clear
@@ -104,7 +103,7 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
           {onClearPersisted && (
             <button
               onClick={onClearPersisted}
-              className="p-1 text-red-400 hover:text-red-300 transition-colors"
+              className="rounded-md px-2 py-1 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
               title="Clear persisted logs"
             >
               Clear All
@@ -112,7 +111,7 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
           )}
           <button
             onClick={onToggle}
-            className="p-1 text-gray-400 hover:text-white transition-colors"
+            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100"
             title={isExpanded ? "Minimize console" : "Expand console"}
           >
             {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -122,19 +121,14 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
 
       {/* Mini Console - Always visible when collapsed */}
       {!isExpanded && recentLogs.length > 0 && (
-        <div className="bg-black px-3 py-2 border-b border-gray-800">
+        <div className="space-y-1 border-b border-slate-800 bg-slate-950 px-4 py-2.5">
           {recentLogs.map((log, index) => (
-            <div key={index} className="flex items-start space-x-2 text-xs font-mono">
-              <span className="text-gray-500 shrink-0">{log.timestamp}</span>
-              <span className={`shrink-0 ${
-                log.level === 'error' ? 'text-red-400' :
-                log.level === 'warn' ? 'text-yellow-400' :
-                log.level === 'info' ? 'text-blue-400' :
-                'text-gray-400'
-              }`}>
+            <div key={index} className="flex items-start gap-2.5 text-xs font-mono">
+              <span className="shrink-0 tabular-nums text-slate-600">{log.timestamp}</span>
+              <span className={`shrink-0 font-semibold ${levelColor(log.level)}`}>
                 {log.level.toUpperCase()}
               </span>
-              <span className="text-gray-300 truncate">{log.message}</span>
+              <span className="truncate text-slate-300">{log.message}</span>
             </div>
           ))}
         </div>
@@ -145,26 +139,22 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
         <div 
           ref={consoleRef}
           onScroll={handleScroll}
-          className="bg-black p-3 h-64 overflow-y-auto font-mono text-xs"
+          className="console-dark h-64 overflow-y-auto bg-slate-950 p-4 font-mono text-xs"
         >
           {logs.length === 0 ? (
-            <div className="text-gray-500 text-center py-8">
+            <div className="flex flex-col items-center justify-center py-8 text-slate-500">
+              <Terminal className="mb-2 h-6 w-6 text-slate-700" />
               No logs yet. Upload a file to see processing logs.
             </div>
           ) : (
             <div className="space-y-1">
               {logs.map((log, index) => (
-                <div key={index} className="flex items-start space-x-2">
-                  <span className="text-gray-500 shrink-0">{log.timestamp}</span>
-                  <span className={`shrink-0 ${
-                    log.level === 'error' ? 'text-red-400' :
-                    log.level === 'warn' ? 'text-yellow-400' :
-                    log.level === 'info' ? 'text-blue-400' :
-                    'text-gray-400'
-                  }`}>
+                <div key={index} className="flex items-start gap-2.5">
+                  <span className="shrink-0 tabular-nums text-slate-600">{log.timestamp}</span>
+                  <span className={`shrink-0 font-semibold ${levelColor(log.level)}`}>
                     {log.level.toUpperCase()}
                   </span>
-                  <span className="text-gray-300 break-all">{log.message}</span>
+                  <span className="break-all text-slate-300">{log.message}</span>
                 </div>
               ))}
             </div>
@@ -174,13 +164,13 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
 
       {/* Footer with auto-scroll toggle */}
       {isExpanded && (
-        <div className="bg-gray-900 px-3 py-1 border-t border-gray-800 flex items-center justify-end">
-          <label className="flex items-center text-xs text-gray-400 cursor-pointer">
+        <div className="flex items-center justify-end border-t border-slate-800 bg-slate-900/80 px-4 py-1.5">
+          <label className="flex cursor-pointer items-center text-xs text-slate-400">
             <input
               type="checkbox"
               checked={autoScroll}
               onChange={(e) => setAutoScroll(e.target.checked)}
-              className="mr-2"
+              className="mr-2 accent-indigo-500"
             />
             Auto-scroll
           </label>

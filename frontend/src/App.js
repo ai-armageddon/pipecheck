@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, Terminal, HelpCircle, SkipForward, Volume2, VolumeX, Copy } from 'lucide-react';
+import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, HelpCircle, SkipForward, Volume2, VolumeX, Copy, Flag, X } from 'lucide-react';
 import axios from 'axios';
 import { Toaster, toast } from 'sonner';
 import { Progress } from './components/ui/progress';
@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import Console from './Console';
 import CSVPreview from './components/CSVPreview';
 import soundManager from './lib/sounds';
+import { API_URL, WS_URL, apiUrl, wsUrl } from './lib/api';
 import './App.css';
 
 // Elapsed Timer Component
@@ -24,7 +25,7 @@ const ElapsedTimer = ({ startTime }) => {
   const seconds = (elapsed / 1000).toFixed(1);
   
   return (
-    <span className="text-sm text-gray-500 font-mono">
+    <span className="text-sm text-slate-400 font-mono tabular-nums">
       {seconds}s
     </span>
   );
@@ -73,7 +74,7 @@ function App() {
   // WebSocket connection for real-time logs
   useEffect(() => {
     // Connect to global WebSocket
-    ws.current = new WebSocket('ws://localhost:8001/ws');
+    ws.current = new WebSocket(wsUrl('/ws'));
     
     ws.current.onopen = () => {
       console.log('Connected to WebSocket');
@@ -132,7 +133,7 @@ function App() {
     // Then fetch recent logs from backend
     const fetchRecentLogs = async () => {
       try {
-        const response = await axios.get('http://localhost:8001/logs/recent?limit=50');
+        const response = await axios.get(apiUrl('/logs/recent?limit=50'));
         const backendLogs = response.data.map(log => ({
           timestamp: new Date(log.timestamp).toLocaleTimeString(),
           level: log.level,
@@ -190,7 +191,7 @@ function App() {
   // Connect to run-specific WebSocket when uploading
   useEffect(() => {
     if (currentUploadId) {
-      const runWs = new WebSocket(`ws://localhost:8001/ws/${currentUploadId}`);
+      const runWs = new WebSocket(`${WS_URL}/ws/${currentUploadId}`);
       
       runWs.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -266,7 +267,7 @@ function App() {
 
   const fetchRuns = async () => {
     try {
-      const response = await axios.get('http://localhost:8001/runs');
+      const response = await axios.get(apiUrl('/runs'));
       setRuns(response.data);
       // Only auto-select first run on initial load, not on polling
       setSelectedRun(prev => {
@@ -287,7 +288,7 @@ function App() {
 
   const fetchStats = async () => {
     try {
-      const response = await axios.get('http://localhost:8001/stats');
+      const response = await axios.get(apiUrl('/stats'));
       setStats(response.data);
     } catch (error) {
       console.error('Error fetching stats:', error);
@@ -296,7 +297,7 @@ function App() {
 
   const fetchErrors = async (runId) => {
     try {
-      const response = await axios.get(`http://localhost:8001/runs/${runId}/errors`);
+      const response = await axios.get(`${API_URL}/runs/${runId}/errors`);
       setErrors(response.data);
     } catch (error) {
       console.error('Error fetching errors:', error);
@@ -307,7 +308,7 @@ function App() {
 
   const fetchProcessedData = async (runId) => {
     try {
-      const response = await axios.get(`http://localhost:8001/runs/${runId}/data`);
+      const response = await axios.get(`${API_URL}/runs/${runId}/data`);
       setProcessedData(response.data);
     } catch (error) {
       console.error('Error fetching processed data:', error);
@@ -382,8 +383,8 @@ function App() {
 
     // Build URL with force parameter if needed
     const uploadUrl = forceUpload 
-      ? 'http://localhost:8001/upload?force=true' 
-      : 'http://localhost:8001/upload';
+      ? apiUrl('/upload?force=true') 
+      : apiUrl('/upload');
 
     try {
       const response = await axios.post(uploadUrl, formData, {
@@ -570,7 +571,7 @@ function App() {
 
   const handleExport = async (runId, format = 'csv') => {
     try {
-      const response = await axios.get(`http://localhost:8001/export/${runId}?format=${format}`, {
+      const response = await axios.get(`${API_URL}/export/${runId}?format=${format}`, {
         responseType: 'blob'
       });
       
@@ -590,7 +591,7 @@ function App() {
 
   const handleExportErrors = async (runId, format = 'csv') => {
     try {
-      const response = await axios.get(`http://localhost:8001/errors/${runId}/export?format=${format}`, {
+      const response = await axios.get(`${API_URL}/errors/${runId}/export?format=${format}`, {
         responseType: 'blob'
       });
       
@@ -610,7 +611,7 @@ function App() {
 
   const handleExportAll = async (format = 'csv') => {
     try {
-      const response = await axios.get(`http://localhost:8001/export/all?format=${format}`, {
+      const response = await axios.get(`${API_URL}/export/all?format=${format}`, {
         responseType: 'blob'
       });
       
@@ -636,7 +637,7 @@ function App() {
         onClick: async () => {
           soundManager.delete();
           try {
-            await axios.delete(`http://localhost:8001/runs/${runId}`);
+            await axios.delete(`${API_URL}/runs/${runId}`);
             
             // Refresh the runs list
             await fetchRuns();
@@ -666,7 +667,7 @@ function App() {
     soundManager.click();
     try {
       addLog('info', `Reprocessing run ${runId}...`);
-      const response = await axios.post(`http://localhost:8001/runs/${runId}/reprocess`);
+      await axios.post(`${API_URL}/runs/${runId}/reprocess`);
       
       setCurrentUploadId(runId);
       setProcessingProgress({ [runId]: 0 });
@@ -713,7 +714,7 @@ function App() {
         onClick: async () => {
           soundManager.delete();
           try {
-            await axios.delete('http://localhost:8001/runs');
+            await axios.delete(apiUrl('/runs'));
             
             // Clear all data
             setRuns([]);
@@ -742,7 +743,7 @@ function App() {
     
     // Delete the existing run first
     try {
-      await axios.delete(`http://localhost:8001/runs/${existingRun.run_id}`);
+      await axios.delete(`${API_URL}/runs/${existingRun.run_id}`);
       await fetchRuns();
       toast.success('Previous run deleted');
     } catch (error) {
@@ -775,7 +776,7 @@ function App() {
   const pollProcessingProgress = async (runId, startTime = null) => {
     const pollInterval = setInterval(async () => {
       try {
-        const response = await axios.get(`http://localhost:8001/runs/${runId}`);
+        const response = await axios.get(`${API_URL}/runs/${runId}`);
         const run = response.data;
         
         if (run.status === 'completed' || run.status === 'failed' || run.status === 'partial_success') {
@@ -785,7 +786,7 @@ function App() {
           if (elapsed) {
             setProcessingTime(elapsed);
             addLog('info', `Processing completed in ${(elapsed / 1000).toFixed(2)}s - Status: ${run.status}`);
-            addLog('info', `Results: ${run.rows_inserted} inserted, ${run.rows_updated} updated, ${run.errors_count} errors`);
+            addLog('info', `Results: ${run.rows_inserted} inserted, ${run.rows_updated} updated, ${run.rows_rejected || 0} rejected, ${run.rows_flagged || 0} needing review`);
           }
           
           setProcessingProgress(prev => {
@@ -803,15 +804,20 @@ function App() {
             toast.success(`Processing complete! ${run.rows_inserted} rows inserted.`);
           } else if (run.status === 'partial_success') {
             soundManager.warning();
-            toast.warning(`Processing complete with errors. ${run.rows_inserted} inserted, ${run.errors_count} errors.`);
+            const parts = [`${run.rows_inserted} inserted`];
+            if (run.rows_rejected) parts.push(`${run.rows_rejected} rejected`);
+            if (run.rows_flagged) parts.push(`${run.rows_flagged} needing review`);
+            toast.warning(`Processing complete: ${parts.join(', ')}.`);
           } else {
             soundManager.error();
             toast.error('Processing failed. Check the console for details.');
           }
         } else if (run.status === 'processing') {
-          // Calculate progress based on rows processed
-          const progress = run.total_rows > 0 
-            ? Math.round(((run.rows_inserted + run.rows_updated + run.errors_count + (run.rows_rejected || 0)) / run.total_rows) * 100)
+          // Progress counts each row exactly once, by outcome.
+          const handled = run.rows_inserted + run.rows_updated
+            + (run.rows_skipped || 0) + (run.rows_rejected || 0);
+          const progress = run.total_rows > 0
+            ? Math.min(100, Math.round((handled / run.total_rows) * 100))
             : 0;
           setProcessingProgress(prev => ({ ...prev, [runId]: progress }));
         }
@@ -878,7 +884,10 @@ function App() {
   };
 
   return (
-    <div className={`min-h-screen bg-gray-50 ${sizeClasses.container}`}>
+    <div className={`relative min-h-screen bg-[#f6f7fb] text-slate-800 ${sizeClasses.container}`}>
+      {/* Decorative top gradient */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-96 bg-gradient-to-b from-indigo-100/70 via-indigo-50/30 to-transparent" />
+
       <Toaster 
         position="top-right"
         expand={false}
@@ -891,13 +900,13 @@ function App() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Copy className="w-5 h-5 text-yellow-500" />
+              <Copy className="w-5 h-5 text-amber-500" />
               Duplicate File Detected
             </DialogTitle>
             <DialogDescription>
               A file named <strong>{duplicateFileDialog.file?.name}</strong> has already been processed.
               {duplicateFileDialog.existingRun && (
-                <span className="block mt-2 text-gray-600">
+                <span className="block mt-2 text-slate-600">
                   Previous run: {new Date(duplicateFileDialog.existingRun.created_at).toLocaleString()} 
                   ({duplicateFileDialog.existingRun.rows_inserted} rows inserted)
                 </span>
@@ -905,21 +914,21 @@ function App() {
             </DialogDescription>
           </DialogHeader>
           <div className="py-4">
-            <p className="text-sm text-gray-600 mb-4">What would you like to do?</p>
+            <p className="text-sm text-slate-500 mb-4">What would you like to do?</p>
             <div className="space-y-3">
               <button
                 onClick={handleDuplicateOverwrite}
-                className="w-full p-3 text-left border rounded-lg hover:bg-gray-50 transition-colors"
+                className="w-full p-3.5 text-left rounded-xl border border-slate-200 transition-all hover:border-indigo-300 hover:bg-indigo-50/50 hover:shadow-sm"
               >
-                <div className="font-medium text-gray-900">Overwrite existing</div>
-                <div className="text-sm text-gray-500">Delete the previous run and process this file again</div>
+                <div className="font-medium text-slate-900">Overwrite existing</div>
+                <div className="text-sm text-slate-500">Delete the previous run and process this file again</div>
               </button>
               <button
                 onClick={handleDuplicateNewVersion}
-                className="w-full p-3 text-left border rounded-lg hover:bg-gray-50 transition-colors"
+                className="w-full p-3.5 text-left rounded-xl border border-slate-200 transition-all hover:border-indigo-300 hover:bg-indigo-50/50 hover:shadow-sm"
               >
-                <div className="font-medium text-gray-900">Create new version</div>
-                <div className="text-sm text-gray-500">
+                <div className="font-medium text-slate-900">Create new version</div>
+                <div className="text-sm text-slate-500">
                   Save as {duplicateFileDialog.file?.name.replace(/\.([^.]+)$/, '_v2.$1')} and keep both
                 </div>
               </button>
@@ -928,7 +937,7 @@ function App() {
           <DialogFooter>
             <button
               onClick={handleDuplicateCancel}
-              className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
+              className="btn-ghost px-4 py-2 text-sm"
             >
               Cancel
             </button>
@@ -936,158 +945,189 @@ function App() {
         </DialogContent>
       </Dialog>
 
-      <div className="container mx-auto px-4 py-8">
-        <header className="mb-8 flex justify-between items-start">
-          <div className="flex items-center">
-            <img src="/fav-lg.png" alt="PipeCheck Logo" className={`${uiScale <= 0.875 ? 'w-8 h-8' : uiScale >= 1.125 ? 'w-12 h-12' : 'w-10 h-10'} mr-3`} />
-            <div>
-              <h1 className={`${sizeClasses.header} font-bold text-gray-900 mb-2`}>PipeCheck</h1>
-              <p className="text-gray-600">Ops-grade CSV ingestion pipeline with deduplication and idempotency</p>
+      {/* Sticky glass header */}
+      <header className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/80 backdrop-blur-xl">
+        <div className="container mx-auto px-4">
+          <div className="flex h-16 items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <img src="/fav-lg.png" alt="PipeCheck Logo" className={`${uiScale <= 0.875 ? 'w-8 h-8' : uiScale >= 1.125 ? 'w-11 h-11' : 'w-9 h-9'} rounded-xl ring-1 ring-slate-200 shadow-sm`} />
+              <div className="min-w-0">
+                <h1 className={`${sizeClasses.title} font-bold tracking-tight text-slate-900 leading-tight`}>PipeCheck</h1>
+                <p className="hidden sm:block truncate text-xs text-slate-500">Ops-grade CSV ingestion with dedup & idempotency</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="hidden md:flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2 py-1.5 shadow-sm">
+                <button
+                  onClick={() => setUiScale(0.75)}
+                  className={`rounded-md p-1 transition-colors ${uiScale === 0.75 ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+                  title="75% - Smallest"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                </button>
+                <input
+                  type="range"
+                  min="0.75"
+                  max="1.375"
+                  step="0.125"
+                  value={uiScale}
+                  onChange={(e) => setUiScale(parseFloat(e.target.value))}
+                  className="h-1 w-20 cursor-pointer appearance-none rounded-full accent-indigo-600"
+                  style={{
+                    background: `linear-gradient(to right, #4F46E5 0%, #4F46E5 ${((uiScale - 0.75) / 0.625) * 100}%, #E2E8F0 ${((uiScale - 0.75) / 0.625) * 100}%, #E2E8F0 100%)`
+                  }}
+                />
+                <button
+                  onClick={() => setUiScale(1.375)}
+                  className={`rounded-md p-1 transition-colors ${uiScale === 1.375 ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+                  title="137.5% - Largest"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
+                <span className="w-9 text-right font-mono text-xs text-slate-400">
+                  {Math.round(uiScale * 100)}%
+                </span>
+              </div>
+              <button
+                onClick={() => setShowStatusMeaning(!showStatusMeaning)}
+                className={`icon-btn h-9 w-9 ${showStatusMeaning ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100 hover:text-indigo-700' : ''}`}
+                title="What do the statuses mean?"
+              >
+                <HelpCircle className="w-5 h-5" />
+              </button>
+              <button
+                onClick={toggleSound}
+                className={`icon-btn h-9 w-9 ${soundEnabled ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100 hover:text-indigo-700' : ''}`}
+                title={soundEnabled ? "Sound effects on - click to mute" : "Sound effects off - click to enable"}
+              >
+                {soundEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+              </button>
             </div>
           </div>
-          <div className="flex items-center space-x-1 bg-white rounded-lg shadow p-1">
-            <button
-              onClick={() => setUiScale(0.75)}
-              className={`p-1 rounded ${uiScale === 0.75 ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
-              title="75% - Smallest"
-            >
-              <ZoomOut className="w-3 h-3" />
-            </button>
-            <div className="flex items-center px-2">
-              <input
-                type="range"
-                min="0.75"
-                max="1.375"
-                step="0.125"
-                value={uiScale}
-                onChange={(e) => setUiScale(parseFloat(e.target.value))}
-                className="w-20 h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #3B82F6 0%, #3B82F6 ${((uiScale - 0.75) / 0.625) * 100}%, #E5E7EB ${((uiScale - 0.75) / 0.625) * 100}%, #E5E7EB 100%)`
-                }}
-              />
-            </div>
-            <button
-              onClick={() => setUiScale(1.375)}
-              className={`p-1 rounded ${uiScale === 1.375 ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
-              title="137.5% - Largest"
-            >
-              <ZoomIn className="w-3 h-3" />
-            </button>
-            <span className="text-xs text-gray-500 ml-1 font-mono">
-              {Math.round(uiScale * 100)}%
-            </span>
-          </div>
-          <button
-            onClick={() => setShowStatusMeaning(!showStatusMeaning)}
-            className="ml-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-            title="What do the statuses mean?"
-          >
-            <HelpCircle className="w-5 h-5" />
-          </button>
-          <button
-            onClick={toggleSound}
-            className={`ml-2 p-2 rounded-lg transition-colors ${soundEnabled ? 'text-blue-500 hover:bg-blue-50' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
-            title={soundEnabled ? "Sound effects on - click to mute" : "Sound effects off - click to enable"}
-          >
-            {soundEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
-          </button>
-        </header>
+        </div>
+      </header>
+
+      <div className="container relative mx-auto px-4 py-8">
 
         {/* Status Meanings Popup */}
         {showStatusMeaning && (
-          <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-            <div className="flex justify-between items-start mb-2">
-              <h3 className="font-semibold text-blue-900">Status Meanings</h3>
+          <div className="card animate-scaleIn fixed right-4 top-[4.5rem] z-50 w-80 max-w-[calc(100vw-2rem)] p-4 shadow-card-hover">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="font-semibold tracking-tight text-slate-900">Status Meanings</h3>
               <button
                 onClick={() => setShowStatusMeaning(false)}
-                className="text-blue-600 hover:text-blue-800"
+                className="icon-btn h-7 w-7"
               >
-                ×
+                <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center">
-                <Clock className="w-4 h-4 text-yellow-500 mr-2" />
-                <span className="font-medium">Pending:</span>
-                <span className="ml-2 text-gray-600">File uploaded, waiting to be processed</span>
+            <div className="space-y-2.5 text-sm">
+              <div className="flex items-start gap-2.5">
+                <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <div>
+                  <span className="font-medium text-slate-800">Pending</span>
+                  <span className="text-slate-500"> — file uploaded, waiting to be processed</span>
+                </div>
               </div>
-              <div className="flex items-center">
-                <RefreshCw className="w-4 h-4 text-blue-500 mr-2 animate-spin" />
-                <span className="font-medium">Processing:</span>
-                <span className="ml-2 text-gray-600">Currently validating and importing data</span>
+              <div className="flex items-start gap-2.5">
+                <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-indigo-500" />
+                <div>
+                  <span className="font-medium text-slate-800">Processing</span>
+                  <span className="text-slate-500"> — currently validating and importing data</span>
+                </div>
               </div>
-              <div className="flex items-center">
-                <CheckCircle className="w-4 h-4 text-green-500 mr-2" />
-                <span className="font-medium">Completed:</span>
-                <span className="ml-2 text-gray-600">Successfully processed all rows</span>
+              <div className="flex items-start gap-2.5">
+                <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+                <div>
+                  <span className="font-medium text-slate-800">Completed</span>
+                  <span className="text-slate-500"> — successfully processed all rows</span>
+                </div>
               </div>
-              <div className="flex items-center">
-                <XCircle className="w-4 h-4 text-red-500 mr-2" />
-                <span className="font-medium">Failed:</span>
-                <span className="ml-2 text-gray-600">Processing failed due to an error</span>
+              <div className="flex items-start gap-2.5">
+                <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-500" />
+                <div>
+                  <span className="font-medium text-slate-800">Failed</span>
+                  <span className="text-slate-500"> — processing failed due to an error</span>
+                </div>
               </div>
-              <div className="flex items-center">
-                <AlertCircle className="w-4 h-4 text-yellow-500 mr-2" />
-                <span className="font-medium">Partial Success:</span>
-                <span className="ml-2 text-gray-600">Some rows processed, others rejected</span>
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <div>
+                  <span className="font-medium text-slate-800">Partial Success</span>
+                  <span className="text-slate-500"> — some rows processed, others rejected</span>
+                </div>
               </div>
-              <div className="flex items-center">
-                <SkipForward className="w-4 h-4 text-gray-500 mr-2" />
-                <span className="font-medium">Skipped:</span>
-                <span className="ml-2 text-gray-600">Duplicate file, not processed</span>
+              <div className="flex items-start gap-2.5">
+                <SkipForward className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                <div>
+                  <span className="font-medium text-slate-800">Skipped</span>
+                  <span className="text-slate-500"> — duplicate file, not processed</span>
+                </div>
               </div>
             </div>
           </div>
         )}
 
         {stats && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-            <div className={`bg-white rounded-lg shadow ${sizeClasses.statCard}`}>
-              <div className="flex items-center">
-                <Activity className={`${uiScale <= 0.875 ? 'w-6 h-6' : uiScale >= 1.125 ? 'w-10 h-10' : 'w-8 h-8'} text-blue-500 mr-3`} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
+            <div className={`card card-hover animate-rise ${sizeClasses.statCard}`} style={{ animationDelay: '0ms' }}>
+              <div className="flex items-center gap-4">
+                <div className="rounded-xl bg-indigo-50 p-2.5 text-indigo-600 ring-1 ring-indigo-100">
+                  <Activity className="w-5 h-5" />
+                </div>
                 <div>
-                  <p className="text-gray-600">Total Runs</p>
-                  <p className={`${sizeClasses.statValue} font-bold`}>{stats.total_runs}</p>
+                  <p className="label-micro">Total Runs</p>
+                  <p className={`${sizeClasses.statValue} font-bold tracking-tight tabular-nums text-slate-900`}>{stats.total_runs}</p>
                 </div>
               </div>
             </div>
-            
-            <div className={`bg-white rounded-lg shadow ${sizeClasses.statCard}`}>
-              <div className="flex items-center">
-                <CheckCircle className={`${uiScale <= 0.875 ? 'w-6 h-6' : uiScale >= 1.125 ? 'w-10 h-10' : 'w-8 h-8'} text-green-500 mr-3`} />
+
+            <div className={`card card-hover animate-rise ${sizeClasses.statCard}`} style={{ animationDelay: '50ms' }}>
+              <div className="flex items-center gap-4">
+                <div className="rounded-xl bg-emerald-50 p-2.5 text-emerald-600 ring-1 ring-emerald-100">
+                  <CheckCircle className="w-5 h-5" />
+                </div>
                 <div>
-                  <p className="text-gray-600">Success Rate</p>
-                  <p className={`${sizeClasses.statValue} font-bold`}>{stats.success_rate.toFixed(1)}%</p>
+                  <p className="label-micro">Success Rate</p>
+                  <p className={`${sizeClasses.statValue} font-bold tracking-tight tabular-nums text-slate-900`}>{stats.success_rate.toFixed(1)}%</p>
                 </div>
               </div>
             </div>
-            
-            <div className={`bg-white rounded-lg shadow ${sizeClasses.statCard}`}>
-              <div className="flex items-center">
-                <FileText className={`${uiScale <= 0.875 ? 'w-6 h-6' : uiScale >= 1.125 ? 'w-10 h-10' : 'w-8 h-8'} text-purple-500 mr-3`} />
+
+            <div className={`card card-hover animate-rise ${sizeClasses.statCard}`} style={{ animationDelay: '100ms' }}>
+              <div className="flex items-center gap-4">
+                <div className="rounded-xl bg-violet-50 p-2.5 text-violet-600 ring-1 ring-violet-100">
+                  <FileText className="w-5 h-5" />
+                </div>
                 <div>
-                  <p className="text-gray-600">Rows Processed</p>
-                  <p className={`${sizeClasses.statValue} font-bold`}>{stats.total_rows_processed.toLocaleString()}</p>
+                  <p className="label-micro">Rows Processed</p>
+                  <p className={`${sizeClasses.statValue} font-bold tracking-tight tabular-nums text-slate-900`}>{stats.total_rows_processed.toLocaleString()}</p>
                 </div>
               </div>
             </div>
-            
-            <div className={`bg-white rounded-lg shadow ${sizeClasses.statCard}`}>
-              <div className="flex items-center">
+
+            <div className={`card card-hover animate-rise ${sizeClasses.statCard}`} style={{ animationDelay: '150ms' }}>
+              <div className="flex items-center gap-4">
                 {stats.last_run ? (
                   <>
-                    {getStatusIcon(stats.last_run.status)}
-                    <div className="ml-3">
-                      <p className="text-gray-600">Last Run</p>
-                      <p className="font-medium capitalize">{stats.last_run.status}</p>
+                    <div className="rounded-xl bg-slate-100 p-2.5 text-slate-500 ring-1 ring-slate-200">
+                      {getStatusIcon(stats.last_run.status)}
+                    </div>
+                    <div>
+                      <p className="label-micro">Last Run</p>
+                      <p className={`${sizeClasses.statValue} font-semibold tracking-tight capitalize text-slate-800`}>{stats.last_run.status.replace('_', ' ')}</p>
                     </div>
                   </>
                 ) : (
-                  <div>
-                    <p className="text-gray-600">Last Run</p>
-                    <p className="font-medium">No runs yet</p>
-                  </div>
+                  <>
+                    <div className="rounded-xl bg-slate-100 p-2.5 text-slate-400 ring-1 ring-slate-200">
+                      <Clock className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="label-micro">Last Run</p>
+                      <p className="font-medium text-slate-400">No runs yet</p>
+                    </div>
+                  </>
                 )}
               </div>
             </div>
@@ -1096,32 +1136,32 @@ function App() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2">
-            <div className="bg-white rounded-lg shadow mb-6">
+            <div className="card animate-rise mb-6">
               <div className={`${sizeClasses.card}`}>
-                <h2 className={`${sizeClasses.title} font-semibold mb-4`}>Upload CSV</h2>
-                
+                <div className="mb-5 flex items-center gap-3">
+                  <div className="rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 p-2 text-white shadow-md shadow-indigo-500/25">
+                    <Upload className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h2 className={`${sizeClasses.title} card-title`}>Upload Data</h2>
+                    <p className="text-sm text-slate-500">Drop files, paste raw rows, or fetch from a URL</p>
+                  </div>
+                </div>
+
                 {/* Upload Method Tabs */}
-                <div className="flex space-x-1 mb-4">
+                <div className="segmented mb-5">
                   <button
                     onClick={() => setUploadMethod('file')}
-                    className={`px-3 py-2 text-sm font-medium rounded-t-lg ${
-                      uploadMethod === 'file' 
-                        ? 'bg-blue-500 text-white' 
-                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                    }`}
+                    className={`segmented-item ${uploadMethod === 'file' ? 'segmented-item-active' : ''}`}
                   >
-                    <Upload className="inline w-4 h-4 mr-1" />
+                    <Upload className="w-4 h-4" />
                     File
                   </button>
                   <button
                     onClick={() => setUploadMethod('paste')}
-                    className={`px-3 py-2 text-sm font-medium rounded-t-lg ${
-                      uploadMethod === 'paste' 
-                        ? 'bg-blue-500 text-white' 
-                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                    }`}
+                    className={`segmented-item ${uploadMethod === 'paste' ? 'segmented-item-active' : ''}`}
                   >
-                    <Clipboard className="inline w-4 h-4 mr-1" />
+                    <Clipboard className="w-4 h-4" />
                     Paste Raw Data
                   </button>
                 </div>
@@ -1130,9 +1170,11 @@ function App() {
                 {uploadMethod === 'file' && (
                   <div>
                     <div
-                      className={`relative border-2 border-dashed rounded-lg text-center transition-colors ${
-                        dragActive ? 'border-blue-400 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
-                      } ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} ${
+                      className={`group relative border-2 border-dashed rounded-xl text-center ${
+                        dragActive
+                          ? 'border-indigo-500 bg-indigo-50/60 ring-4 ring-indigo-500/10'
+                          : 'border-slate-300 bg-slate-50/60 hover:border-indigo-400 hover:bg-indigo-50/40'
+                      } ${uploading ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} ${
                         uiScale <= 0.875 ? 'p-4' : uiScale >= 1.125 ? 'p-12' : 'p-8'
                       }`}
                       onDragEnter={handleDrag}
@@ -1148,18 +1190,29 @@ function App() {
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                         disabled={uploading}
                       />
-                      <Upload className={`${uiScale <= 0.875 ? 'w-8 h-8' : uiScale >= 1.125 ? 'w-16 h-16' : 'w-12 h-12'} text-gray-400 mx-auto mb-4`} />
-                      <p className={`${uiScale <= 0.875 ? 'text-sm' : uiScale >= 1.125 ? 'text-xl' : 'text-lg'} font-medium text-gray-700`}>
-                        {uploading ? 'Uploading...' : 'Drop CSV or Excel files here or click to browse'}
+                      <div className={`mx-auto mb-4 flex items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/25 transition-transform duration-200 group-hover:scale-105 ${uiScale <= 0.875 ? 'h-10 w-10' : uiScale >= 1.125 ? 'h-16 w-16' : 'h-14 w-14'}`}>
+                        <Upload className={uiScale <= 0.875 ? 'w-4 h-4' : uiScale >= 1.125 ? 'w-7 h-7' : 'w-6 h-6'} />
+                      </div>
+                      <p className={`${uiScale <= 0.875 ? 'text-sm' : uiScale >= 1.125 ? 'text-xl' : 'text-lg'} font-semibold text-slate-800`}>
+                        {uploading ? 'Uploading...' : 'Drag & drop files here'}
                       </p>
-                      <p className={`${sizeClasses.container} text-gray-500 mt-2`}>Supports multiple files • CSV, Excel (.xlsx, .xls) with email and optional fields</p>
+                      <p className={`${sizeClasses.container} text-slate-500 mt-1`}>
+                        or <span className="font-medium text-indigo-600">click to browse</span> — you can also paste a CSV anywhere on this page
+                      </p>
+                      <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5">
+                        <span className="chip border border-slate-200 bg-white text-slate-500">CSV</span>
+                        <span className="chip border border-slate-200 bg-white text-slate-500">XLSX</span>
+                        <span className="chip border border-slate-200 bg-white text-slate-500">XLS</span>
+                        <span className="chip border border-slate-200 bg-white text-slate-500">XLSM</span>
+                        <span className="chip bg-slate-100 text-slate-500">multiple files supported</span>
+                      </div>
                     </div>
-                    
+
                     {/* URL Input */}
-                    <div className="mt-4">
-                      <div className="flex items-center mb-2">
-                        <Link className="w-4 h-4 text-gray-500 mr-2" />
-                        <span className="text-sm text-gray-600">Or upload from URL:</span>
+                    <div className="mt-5">
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <Link className="w-3.5 h-3.5 text-slate-400" />
+                        <span className="text-sm text-slate-500">Or upload from URL</span>
                       </div>
                       <div className="flex gap-2">
                         <input
@@ -1167,13 +1220,13 @@ function App() {
                           value={csvUrl}
                           onChange={(e) => setCsvUrl(e.target.value)}
                           placeholder="https://example.com/data.csv"
-                          className="flex-1 p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          className="input flex-1 px-3 py-2 text-sm"
                           disabled={uploading}
                         />
                         <button
                           onClick={handleUrlUpload}
                           disabled={uploading || !csvUrl.trim()}
-                          className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="btn-primary px-4 py-2 text-sm"
                         >
                           {uploading ? 'Fetching...' : 'Fetch'}
                         </button>
@@ -1193,13 +1246,13 @@ Example:
 name,email,phone
 John Doe,john@example.com,555-1234
 Jane Smith,jane@example.com,555-5678"
-                      className="w-full h-48 p-3 border border-gray-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="input w-full h-48 p-3 font-mono text-sm"
                       disabled={uploading}
                     />
                     <button
                       onClick={handlePasteUpload}
                       disabled={uploading || !csvText.trim()}
-                      className="mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="btn-primary mt-3 px-4 py-2 text-sm"
                     >
                       {uploading ? 'Processing...' : 'Upload CSV Data'}
                     </button>
@@ -1210,36 +1263,36 @@ Jane Smith,jane@example.com,555-5678"
 
             {/* Progress Bar */}
             {(uploading || currentUploadId) && (
-              <div className="bg-white rounded-lg shadow mt-6">
+              <div className="card animate-rise mt-6">
                 <div className={`${sizeClasses.card}`}>
                   <div className="flex justify-between items-center mb-4">
-                    <h3 className={`${sizeClasses.title} font-semibold`}>
-                      <RefreshCw className="inline w-4 h-4 mr-2 animate-spin" />
+                    <h3 className={`${sizeClasses.title} card-title flex items-center gap-2`}>
+                      <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
                       Processing...
                     </h3>
                     {uploadStartTime && (
                       <ElapsedTimer startTime={uploadStartTime} />
                     )}
                   </div>
-                  
+
                   {uploadProgress < 100 && (
                     <div className="mb-4">
-                      <div className="flex justify-between text-sm text-gray-600 mb-2">
+                      <div className="flex justify-between text-sm text-slate-500 mb-2">
                         <span>Uploading file...</span>
-                        <span>{uploadProgress}%</span>
+                        <span className="font-medium tabular-nums text-slate-700">{uploadProgress}%</span>
                       </div>
                       <Progress value={uploadProgress} className="h-2" />
                     </div>
                   )}
-                  
+
                   {currentUploadId && processingProgress[currentUploadId] !== undefined && (
                     <div>
-                      <div className="flex justify-between text-sm text-gray-600 mb-2">
+                      <div className="flex justify-between text-sm text-slate-500 mb-2">
                         <span>Processing file...</span>
-                        <span>{processingProgress[currentUploadId] || 0}%</span>
+                        <span className="font-medium tabular-nums text-slate-700">{processingProgress[currentUploadId] || 0}%</span>
                       </div>
                       <Progress value={processingProgress[currentUploadId] || 0} className="h-2" />
-                      <p className="text-xs text-gray-500 mt-2">
+                      <p className="text-xs text-slate-400 mt-2">
                         Validating and processing your data. This may take a moment for large files.
                       </p>
                     </div>
@@ -1250,109 +1303,126 @@ Jane Smith,jane@example.com,555-5678"
 
             {/* Last Processing Time */}
             {processingTime && !uploading && !currentUploadId && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3 mt-6">
-                <p className="text-sm text-green-700">
-                  <CheckCircle className="inline w-4 h-4 mr-1" />
+              <div className="animate-rise mt-6 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <CheckCircle className="w-4 h-4 text-emerald-600" />
+                <p className="text-sm text-emerald-800">
                   Last upload completed in <strong>{(processingTime / 1000).toFixed(2)}s</strong>
                 </p>
               </div>
             )}
 
-            <div className="bg-white rounded-lg shadow">
+            <div className="card animate-rise">
               <div className={`${sizeClasses.card}`}>
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className={`${sizeClasses.title} font-semibold`}>Recent Runs</h2>
+                <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+                  <div className="flex items-center gap-2.5">
+                    <h2 className={`${sizeClasses.title} card-title`}>Recent Runs</h2>
+                    {runs.length > 0 && (
+                      <span className="chip bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100">{runs.length}</span>
+                    )}
+                  </div>
                   <div className="flex gap-2">
                     <button
                       onClick={handleDeleteAllRuns}
-                      className="flex items-center px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600"
+                      className="btn-danger px-3 py-1.5 text-xs"
                     >
-                      <Trash2 className="w-3 h-3 mr-1" />
+                      <Trash2 className="w-3.5 h-3.5" />
                       Delete All
                     </button>
                     <button
                       onClick={() => handleExportAll('csv')}
-                      className="flex items-center px-3 py-1 text-sm bg-green-500 text-white rounded hover:bg-green-600"
+                      className="btn-outline px-3 py-1.5 text-xs"
                     >
-                      <Download className="w-3 h-3 mr-1" />
-                      Export All (CSV)
+                      <Download className="w-3.5 h-3.5 text-emerald-600" />
+                      Export CSV
                     </button>
                     <button
                       onClick={() => handleExportAll('excel')}
-                      className="flex items-center px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                      className="btn-outline px-3 py-1.5 text-xs"
                     >
-                      <Download className="w-3 h-3 mr-1" />
-                      Export All (Excel)
+                      <Download className="w-3.5 h-3.5 text-emerald-600" />
+                      Export Excel
                     </button>
                   </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full table-fixed">
                     <thead>
-                      <tr className="border-b text-xs">
-                        <th className="text-left py-2 px-2 w-28">Status</th>
-                        <th className="text-left py-2 px-2 w-40 truncate">Filename</th>
-                        <th className="text-left py-2 px-2 w-24">Created</th>
-                        <th className="text-right py-2 px-1 w-14">Rows</th>
-                        <th className="text-right py-2 px-1 w-14">Ins.</th>
-                        <th className="text-right py-2 px-1 w-14">Upd.</th>
-                        <th className="text-right py-2 px-1 w-14">Err.</th>
-                        <th className="text-center py-2 px-1 w-16">Prog.</th>
-                        <th className="text-center py-2 px-1 w-12"></th>
+                      <tr className="border-b border-slate-200">
+                        <th className="label-micro text-left py-2.5 px-2 w-28">Status</th>
+                        <th className="label-micro text-left py-2.5 px-2 w-40 truncate">Filename</th>
+                        <th className="label-micro text-left py-2.5 px-2 w-24">Created</th>
+                        <th className="label-micro text-right py-2.5 px-1 w-14">Rows</th>
+                        <th className="label-micro text-right py-2.5 px-1 w-14">Ins.</th>
+                        <th className="label-micro text-right py-2.5 px-1 w-14">Upd.</th>
+                        <th className="label-micro text-right py-2.5 px-1 w-20" title="Rejected rows / rows needing review">Err.</th>
+                        <th className="label-micro text-center py-2.5 px-1 w-14">Prog.</th>
+                        <th className="text-center py-2.5 px-1 w-12"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {runs.map((run) => (
                         <tr
                           key={run.run_id}
-                          className={`border-b hover:bg-gray-50 cursor-pointer transition-colors ${selectedRun?.run_id === run.run_id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}`}
+                          className={`border-b border-slate-100 hover:bg-slate-50/80 cursor-pointer transition-colors ${selectedRun?.run_id === run.run_id ? 'bg-indigo-50/70 shadow-[inset_3px_0_0_0_#6366f1]' : ''}`}
                           onClick={() => {
                             setSelectedRun(run);
                             fetchErrors(run.run_id);
                             fetchProcessedData(run.run_id);
                           }}
                         >
-                          <td className="py-2 px-2">
+                          <td className="py-2.5 px-2">
                             <span className={`${getStatusBadgeClass(run.status)} text-xs`}>
-                              {getStatusIcon(run.status)}
+                              <span className={`h-1.5 w-1.5 rounded-full bg-current ${run.status === 'processing' ? 'animate-pulse' : ''}`} />
                               <span className="ml-1 capitalize hidden sm:inline">{run.status.replace('_', ' ')}</span>
                             </span>
                           </td>
-                          <td className={`${sizeClasses.table} px-2 truncate`} title={run.filename}>{run.filename}</td>
-                          <td className={`${sizeClasses.table} px-2 text-gray-600 text-xs`}>{formatDate(run.created_at)}</td>
-                          <td className={`${sizeClasses.table} px-1 text-right`}>{run.total_rows.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-1 text-right text-green-600`}>{run.rows_inserted.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-1 text-right text-blue-600`}>{run.rows_updated.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-1 text-right text-red-600`}>{run.errors_count}</td>
+                          <td className={`${sizeClasses.table} px-2 truncate font-medium text-slate-700`} title={run.filename}>{run.filename}</td>
+                          <td className={`${sizeClasses.table} px-2 text-slate-500 text-xs`}>{formatDate(run.created_at)}</td>
+                          <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-slate-600`}>{run.total_rows.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-emerald-600`}>{run.rows_inserted.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-indigo-600`}>{run.rows_updated.toLocaleString()}</td>
+                          <td className={`${sizeClasses.table} px-1 text-right whitespace-nowrap tabular-nums`}>
+                            <span className="text-rose-600" title={`${run.rows_rejected ?? run.errors_count} rejected`}>
+                              {run.rows_rejected ?? run.errors_count}
+                            </span>
+                            {run.rows_flagged > 0 && (
+                              <span
+                                className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200"
+                                title={`${run.rows_flagged} row(s) repaired with invented values - review before use`}
+                              >
+                                <Flag className="w-3 h-3" />{run.rows_flagged}
+                              </span>
+                            )}
+                          </td>
                           <td className={`${sizeClasses.table} text-center`}>
                             {run.status === 'processing' ? (
-                              <div className="flex items-center justify-center">
-                                <span className="text-xs text-gray-600 mr-2">
+                              <div className="flex items-center justify-center gap-2">
+                                <span className="text-xs text-slate-500 tabular-nums w-8 text-right">
                                   {processingProgress[run.run_id] || 0}%
                                 </span>
-                                <div className="w-16 bg-gray-200 rounded-full h-2">
+                                <div className="w-16 bg-slate-100 rounded-full h-1.5 overflow-hidden">
                                   <div 
-                                    className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                                    className="bg-gradient-to-r from-indigo-500 to-violet-500 h-1.5 rounded-full transition-all duration-300"
                                     style={{ width: `${processingProgress[run.run_id] || 0}%` }}
                                   />
                                 </div>
                               </div>
                             ) : run.status === 'completed' ? (
-                              <span className="text-green-600 text-xs">100%</span>
+                              <span className="text-emerald-600 text-xs font-medium">100%</span>
                             ) : run.status === 'failed' ? (
-                              <span className="text-red-600 text-xs">Failed</span>
+                              <span className="text-rose-600 text-xs font-medium">Failed</span>
                             ) : (
-                              <span className="text-gray-400 text-xs">-</span>
+                              <span className="text-slate-300 text-xs">—</span>
                             )}
                           </td>
                           <td className={`${sizeClasses.table} text-center`}>
-                            <div className="flex justify-center gap-1">
+                            <div className="flex justify-center gap-0.5">
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleReprocessRun(run.run_id);
                                 }}
-                                className="p-1 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded"
+                                className="icon-btn h-7 w-7 hover:bg-indigo-50 hover:text-indigo-600"
                                 title="Reprocess file"
                               >
                                 <RefreshCw className="w-4 h-4" />
@@ -1362,7 +1432,7 @@ Jane Smith,jane@example.com,555-5678"
                                   e.stopPropagation();
                                   handleDeleteRun(run.run_id);
                                 }}
-                                className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                                className="icon-btn h-7 w-7 hover:bg-rose-50 hover:text-rose-600"
                                 title="Delete run"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -1374,8 +1444,12 @@ Jane Smith,jane@example.com,555-5678"
                     </tbody>
                   </table>
                   {runs.length === 0 && (
-                    <div className="text-center py-8 text-gray-500">
-                      No runs yet. Upload a CSV or Excel file to get started.
+                    <div className="flex flex-col items-center justify-center py-12 text-center">
+                      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100">
+                        <FileText className="h-5 w-5 text-slate-400" />
+                      </div>
+                      <p className="font-medium text-slate-600">No runs yet</p>
+                      <p className="text-sm text-slate-400 mt-0.5">Upload a CSV or Excel file to get started.</p>
                     </div>
                   )}
                 </div>
@@ -1385,76 +1459,97 @@ Jane Smith,jane@example.com,555-5678"
 
           <div>
             {selectedRun && (
-              <div className="bg-white rounded-lg shadow">
+              <div className="card animate-rise">
                 <div className={`${sizeClasses.card}`}>
-                  <h2 className={`${sizeClasses.title} font-semibold mb-4`}>Run Details</h2>
-                  <div className="space-y-3">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Run ID:</span>
-                      <span className={`${sizeClasses.table} font-mono`}>{selectedRun.run_id.slice(0, 8)}...</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Status:</span>
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <h2 className={`${sizeClasses.title} card-title`}>Run Details</h2>
+                    <span className="chip bg-slate-100 font-mono text-slate-500" title={selectedRun.run_id}>
+                      {selectedRun.run_id.slice(0, 8)}…
+                    </span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    <div className="flex items-center justify-between py-2">
+                      <span className="text-sm text-slate-500">Status</span>
                       <span className={getStatusBadgeClass(selectedRun.status)}>
                         {getStatusIcon(selectedRun.status)}
-                        <span className="ml-1 capitalize">{selectedRun.status}</span>
+                        <span className="ml-1 capitalize">{selectedRun.status.replace('_', ' ')}</span>
                       </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Created:</span>
-                      <span className={`${sizeClasses.table}`}>{formatDate(selectedRun.created_at)}</span>
+                    <div className="flex items-center justify-between py-2">
+                      <span className="text-sm text-slate-500">Created</span>
+                      <span className={`${sizeClasses.table} text-slate-700`}>{formatDate(selectedRun.created_at)}</span>
                     </div>
                     {selectedRun.completed_at && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Completed:</span>
-                        <span className={`${sizeClasses.table}`}>{formatDate(selectedRun.completed_at)}</span>
+                      <div className="flex items-center justify-between py-2">
+                        <span className="text-sm text-slate-500">Completed</span>
+                        <span className={`${sizeClasses.table} text-slate-700`}>{formatDate(selectedRun.completed_at)}</span>
                       </div>
                     )}
-                    {selectedRun.error_message && (
-                      <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded">
-                        <p className="text-xs text-red-600 font-medium">Error:</p>
-                        <p className="text-sm text-red-800">{selectedRun.error_message}</p>
-                      </div>
-                    )}
-                    <hr />
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="text-center">
-                        <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold`}>{selectedRun.total_rows.toLocaleString()}</p>
-                        <p className={`${sizeClasses.table} text-gray-600`}>Total Rows</p>
-                      </div>
-                      <div className="text-center">
-                        <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold text-green-600`}>{selectedRun.rows_inserted.toLocaleString()}</p>
-                        <p className={`${sizeClasses.table} text-gray-600`}>Inserted</p>
-                      </div>
+                  </div>
+                  {selectedRun.error_message && (
+                    <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-rose-600">Error</p>
+                      <p className="mt-1 text-sm text-rose-800">{selectedRun.error_message}</p>
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="text-center">
-                        <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold text-blue-600`}>{selectedRun.rows_updated.toLocaleString()}</p>
-                        <p className={`${sizeClasses.table} text-gray-600`}>Updated</p>
-                      </div>
-                      <div className="text-center">
-                        <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold text-gray-600`}>{selectedRun.rows_skipped.toLocaleString()}</p>
-                        <p className={`${sizeClasses.table} text-gray-600`}>Skipped</p>
-                      </div>
+                  )}
+
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    <div className="rounded-xl bg-slate-50 p-3 text-center ring-1 ring-slate-200/70">
+                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-slate-900`}>{selectedRun.total_rows.toLocaleString()}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Total Rows</p>
+                    </div>
+                    <div className="rounded-xl bg-emerald-50 p-3 text-center ring-1 ring-emerald-100">
+                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-emerald-700`}>{selectedRun.rows_inserted.toLocaleString()}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-600/70">Inserted</p>
+                    </div>
+                    <div className="rounded-xl bg-indigo-50 p-3 text-center ring-1 ring-indigo-100">
+                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-indigo-700`}>{selectedRun.rows_updated.toLocaleString()}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-indigo-600/70">Updated</p>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 p-3 text-center ring-1 ring-slate-200/70">
+                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-slate-500`}>{selectedRun.rows_skipped.toLocaleString()}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Skipped</p>
+                    </div>
+                    <div className="rounded-xl bg-rose-50 p-3 text-center ring-1 ring-rose-100">
+                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-rose-700`}>{(selectedRun.rows_rejected || 0).toLocaleString()}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-rose-600/70">Rejected</p>
+                    </div>
+                    <div className="rounded-xl bg-amber-50 p-3 text-center ring-1 ring-amber-100">
+                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-amber-700`}>{(selectedRun.rows_flagged || 0).toLocaleString()}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-amber-600/70">Needs Review</p>
                     </div>
                   </div>
-                  
-                  {selectedRun.status === 'completed' && (
-                    <div className="mt-4 pt-4 border-t">
-                      <h3 className="text-sm font-medium text-gray-700 mb-2">Export Data</h3>
+
+                  {selectedRun.rows_flagged > 0 && (
+                    <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                      <p className="text-xs text-amber-800 font-semibold flex items-center">
+                        <Flag className="w-3.5 h-3.5 mr-1.5" />
+                        {selectedRun.rows_flagged} row(s) were repaired with invented values
+                      </p>
+                      <p className="text-xs text-amber-700 mt-1">
+                        These rows were kept, but values such as emails or area codes were
+                        guessed rather than read from the file. Check the error report before
+                        treating them as source data.
+                      </p>
+                    </div>
+                  )}
+
+                  {(selectedRun.status === 'completed' || selectedRun.status === 'partial_success') && (
+                    <div className="mt-5 pt-4 border-t border-slate-100">
+                      <h3 className="label-micro mb-2">Export Data</h3>
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleExport(selectedRun.run_id, 'csv')}
-                          className="flex-1 flex items-center justify-center px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600"
+                          className="btn-success flex-1 px-2 py-1.5 text-xs"
                         >
-                          <Download className="w-3 h-3 mr-1" />
+                          <Download className="w-3.5 h-3.5" />
                           CSV
                         </button>
                         <button
                           onClick={() => handleExport(selectedRun.run_id, 'excel')}
-                          className="flex-1 flex items-center justify-center px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                          className="btn-success flex-1 px-2 py-1.5 text-xs"
                         >
-                          <Download className="w-3 h-3 mr-1" />
+                          <Download className="w-3.5 h-3.5" />
                           Excel
                         </button>
                       </div>
@@ -1462,21 +1557,21 @@ Jane Smith,jane@example.com,555-5678"
                   )}
 
                   {(selectedRun.status === 'partial_success' || selectedRun.status === 'failed') && (
-                    <div className="mt-4 pt-4 border-t">
-                      <h3 className="text-sm font-medium text-gray-700 mb-2">Export Error Report</h3>
+                    <div className="mt-4 pt-4 border-t border-slate-100">
+                      <h3 className="label-micro mb-2">Export Error Report</h3>
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleExportErrors(selectedRun.run_id, 'csv')}
-                          className="flex-1 flex items-center justify-center px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
+                          className="btn-danger flex-1 px-2 py-1.5 text-xs"
                         >
-                          <Download className="w-3 h-3 mr-1" />
+                          <Download className="w-3.5 h-3.5" />
                           Errors CSV
                         </button>
                         <button
                           onClick={() => handleExportErrors(selectedRun.run_id, 'excel')}
-                          className="flex-1 flex items-center justify-center px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
+                          className="btn-danger flex-1 px-2 py-1.5 text-xs"
                         >
-                          <Download className="w-3 h-3 mr-1" />
+                          <Download className="w-3.5 h-3.5" />
                           Errors Excel
                         </button>
                       </div>
@@ -1487,24 +1582,25 @@ Jane Smith,jane@example.com,555-5678"
             )}
 
             {errors.length > 0 && (
-              <div className="bg-white rounded-lg shadow mt-6">
+              <div className="card animate-rise mt-6">
                 <div className={`${sizeClasses.card}`}>
-                  <h2 className={`${sizeClasses.title} font-semibold mb-4 flex items-center`}>
-                    <AlertCircle className={`${sizeClasses.icon} text-red-500 mr-2`} />
-                    Errors ({errors.length})
-                  </h2>
-                  <div className={`space-y-2 overflow-y-auto ${
+                  <div className="mb-4 flex items-center gap-2.5">
+                    <div className="rounded-xl bg-rose-50 p-2 text-rose-500 ring-1 ring-rose-100">
+                      <AlertCircle className={`${sizeClasses.icon}`} />
+                    </div>
+                    <h2 className={`${sizeClasses.title} card-title`}>Errors</h2>
+                    <span className="chip bg-rose-50 text-rose-600 ring-1 ring-rose-100">{errors.length}</span>
+                  </div>
+                  <div className={`space-y-2 overflow-y-auto pr-1 ${
                     uiScale <= 0.875 ? 'max-h-64' : uiScale >= 1.125 ? 'max-h-96' : 'max-h-80'
                   }`}>
                     {errors.map((error) => (
-                      <div key={error.id} className="border-l-4 border-red-400 pl-4 py-2">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <p className={`${sizeClasses.table} font-medium text-red-800`}>{error.error_code}</p>
-                            <p className={`${sizeClasses.table} text-gray-600`}>{error.error_message}</p>
-                          </div>
-                          <span className={`${sizeClasses.table} text-gray-500`}>Row {error.row_index}</span>
+                      <div key={error.id} className="rounded-xl border border-rose-100 bg-rose-50/60 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="chip bg-rose-100 font-mono text-rose-700">{error.error_code}</span>
+                          <span className="chip bg-white text-slate-500 ring-1 ring-slate-200">Row {error.row_index}</span>
                         </div>
+                        <p className={`${sizeClasses.table} mt-1.5 text-slate-600`}>{error.error_message}</p>
                       </div>
                     ))}
                   </div>
@@ -1538,31 +1634,31 @@ Jane Smith,jane@example.com,555-5678"
         </div>
 
         {/* Footer */}
-        <footer className="mt-12 pb-8 text-center text-gray-500 text-sm">
+        <footer className="mt-12 pb-10 text-center text-slate-400 text-sm">
           <p>© {new Date().getFullYear()} PipeCheck. Built by{' '}
             <a 
               href="https://x.com/jeremyboulerice" 
               target="_blank" 
               rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-600 hover:underline transition-colors"
+              className="font-medium text-slate-500 hover:text-indigo-600 transition-colors"
             >
               {/* X(.com) logo icon - black */}
-              <svg className="w-4 h-4 inline-block mr-1" viewBox="0 0 24 24" fill="black">
+              <svg className="w-4 h-4 inline-block mr-1" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
               </svg>
               @jeremyboulerice
             </a>
             {/* add margin to separator */}
-            <span className="mx-2">|</span>
+            <span className="mx-2 text-slate-300">|</span>
             {/* Github - @ai-armageddon */}
             <a 
               href="https://github.com/ai-armageddon" 
               target="_blank" 
               rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-600 hover:underline transition-colors"
+              className="font-medium text-slate-500 hover:text-indigo-600 transition-colors"
             >
               {/* Github logo icon - black */}
-              <svg className="w-4 h-4 inline-block mr-1" viewBox="0 0 24 24" fill="black">
+              <svg className="w-4 h-4 inline-block mr-1" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
               </svg>
               ai-armageddon

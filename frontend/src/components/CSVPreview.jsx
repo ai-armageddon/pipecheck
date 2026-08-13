@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { FileText, CheckCircle, AlertCircle, Eye, EyeOff, Download, Sparkles } from 'lucide-react';
+import { FileText, CheckCircle, AlertCircle, Eye, EyeOff, Download, Sparkles, Flag } from 'lucide-react';
 import {
   Pagination,
   PaginationContent,
@@ -40,7 +40,7 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
       const rows = processedData.data.map(row => {
         const rowData = headers.map(h => row[h] ?? '');
         const fixes = row._fixes_applied || [];
-        return { data: rowData, fixes };
+        return { data: rowData, fixes, needsReview: row._needs_review === true };
       });
       return { headers, rows, hasRealData: true };
     }
@@ -134,53 +134,51 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
 
   if (!data) {
     return (
-      <div className="bg-white rounded-lg shadow p-6">
-        <div className="text-center text-gray-500">
-          <FileText className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-          <p>No CSV data to preview</p>
+      <div className="card p-10">
+        <div className="flex flex-col items-center justify-center text-center">
+          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100">
+            <FileText className="h-5 w-5 text-slate-400" />
+          </div>
+          <p className="font-medium text-slate-600">No CSV data to preview</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
+    <div className="card animate-rise overflow-hidden">
       {/* Header */}
-      <div className="border-b border-gray-200 p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center">
-            <h3 className="text-lg font-semibold text-gray-900">CSV Preview</h3>
+      <div className="border-b border-slate-200 px-5 pt-4 pb-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <h3 className="card-title text-lg">CSV Preview</h3>
             {filename && (
-              <span className="ml-3 px-2 py-1 text-sm bg-gray-100 text-gray-600 rounded">
+              <span className="truncate rounded-md bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-600" title={filename}>
                 {filename}
               </span>
             )}
           </div>
           <button
             onClick={() => downloadCSV(displayData, `-${activeTab}`)}
-            className="flex items-center px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600"
+            className="btn-outline px-3 py-1.5 text-xs"
           >
-            <Download className="w-3 h-3 mr-1" />
+            <Download className="w-3.5 h-3.5" />
             Download
           </button>
         </div>
-        
+
         {/* Tabs */}
-        <div className="flex space-x-1 mt-4">
+        <div className="segmented mt-4">
           {tabs.map(tab => {
             const Icon = tab.icon;
             return (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center px-3 py-2 text-sm font-medium rounded-t-lg transition-colors ${
-                  activeTab === tab.id 
-                    ? 'bg-blue-500 text-white' 
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+                className={`segmented-item ${activeTab === tab.id ? 'segmented-item-active' : ''}`}
                 title={tab.description}
               >
-                <Icon className="w-4 h-4 mr-1" />
+                <Icon className="w-4 h-4" />
                 {tab.label}
               </button>
             );
@@ -189,29 +187,29 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
       </div>
 
       {/* Controls */}
-      <div className="border-b border-gray-200 px-4 py-2 bg-gray-50">
+      <div className="border-b border-slate-200 bg-slate-50/80 px-5 py-2.5">
         <div className="flex items-center justify-between text-sm">
-          <div className="flex items-center space-x-4">
-            <label className="flex items-center cursor-pointer">
+          <div className="flex items-center gap-4">
+            <label className="flex cursor-pointer items-center text-slate-600">
               <input
                 type="checkbox"
                 checked={showHeaders}
                 onChange={(e) => setShowHeaders(e.target.checked)}
-                className="mr-2"
+                className="mr-2 accent-indigo-600"
               />
               <span className="flex items-center">
-                {showHeaders ? <Eye className="w-3 h-3 mr-1" /> : <EyeOff className="w-3 h-3 mr-1" />}
+                {showHeaders ? <Eye className="w-3.5 h-3.5 mr-1 text-slate-400" /> : <EyeOff className="w-3.5 h-3.5 mr-1 text-slate-400" />}
                 Headers
               </span>
             </label>
-            
+
             <select
               value={rowsPerPage}
               onChange={(e) => {
                 setRowsPerPage(Number(e.target.value));
                 setCurrentPage(1);
               }}
-              className="px-2 py-1 border border-gray-300 rounded text-sm"
+              className="input px-2 py-1 text-sm"
             >
               <option value={5}>5 per page</option>
               <option value={10}>10 per page</option>
@@ -219,21 +217,29 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
               <option value={50}>50 per page</option>
             </select>
           </div>
-          
-          <div className="text-gray-500">
+
+          <div className="text-slate-500">
             {activeTab === 'final' && (
-              <span className="text-green-600">
+              <span className="text-emerald-600 font-medium">
                 {finalData.rows.length} rows
                 {finalData.hasRealData && (
-                  <span className="ml-2 text-purple-600">
-                    <Sparkles className="inline w-3 h-3 mr-1" />
-                    {finalData.rows.filter(r => r.fixes && r.fixes.length > 0).length} AI-fixed
-                  </span>
+                  <>
+                    <span className="ml-2 text-violet-600">
+                      <Sparkles className="inline w-3 h-3 mr-1" />
+                      {finalData.rows.filter(r => r.fixes && r.fixes.length > 0).length} fixed
+                    </span>
+                    {finalData.rows.some(r => r.needsReview) && (
+                      <span className="ml-2 text-amber-600" title="Repaired with invented values">
+                        <Flag className="inline w-3 h-3 mr-1" />
+                        {finalData.rows.filter(r => r.needsReview).length} need review
+                      </span>
+                    )}
+                  </>
                 )}
               </span>
             )}
             {activeTab === 'highlighted' && (
-              <span className="text-red-600">
+              <span className="text-rose-600 font-medium">
                 {errors.length} rows with issues
               </span>
             )}
@@ -246,14 +252,14 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
 
       {/* Table */}
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
+        <table className="min-w-full divide-y divide-slate-100">
           {showHeaders && (
-            <thead className="bg-gray-50">
+            <thead className="bg-slate-50">
               <tr>
                 {displayData.headers.map((header, index) => (
                   <th
                     key={index}
-                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    className="label-micro px-4 py-2.5 text-left"
                   >
                     {header}
                   </th>
@@ -261,33 +267,40 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
               </tr>
             </thead>
           )}
-          <tbody className="bg-white divide-y divide-gray-200">
+          <tbody className="divide-y divide-slate-100">
             {paginatedRows.map((row, rowIndex) => {
               const rowData = Array.isArray(row) ? row : row.data;
               const hasError = row.hasError || false;
               const rowErrors = row.errors || [];
               const hasFixes = row.fixes && row.fixes.length > 0;
-              
+              const needsReview = row.needsReview || false;
+              const rowTitle = hasError
+                ? rowErrors.map(e => `${e.error_code}: ${e.error_message}`).join('\n')
+                : hasFixes ? `Fixes: ${row.fixes.join(', ')}` : '';
+
               return (
                 <tr 
                   key={rowIndex}
-                  className={hasError ? 'bg-red-50' : hasFixes ? 'bg-purple-50' : rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
-                  title={hasFixes ? `AI Fixes: ${row.fixes.join(', ')}` : ''}
+                  className={hasError ? 'bg-rose-50/70' : needsReview ? 'bg-amber-50/70' : hasFixes ? 'bg-violet-50/70' : rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}
+                  title={rowTitle}
                 >
                   {rowData.map((cell, cellIndex) => (
                     <td
                       key={cellIndex}
-                      className={`px-6 py-4 whitespace-nowrap text-sm text-gray-900 ${
-                        hasError ? 'text-red-700' : ''
+                      className={`whitespace-nowrap px-4 py-2.5 text-sm ${
+                        hasError ? 'text-rose-700' : 'text-slate-700'
                       }`}
                     >
-                      {cell || <span className="text-gray-400 italic">NULL</span>}
+                      {cell || <span className="text-slate-300 italic">NULL</span>}
                     </td>
                   ))}
                   {hasFixes && (
-                    <td className="px-2 py-4">
-                      <span className="text-purple-600" title={row.fixes.join('\n')}>
-                        <Sparkles className="w-4 h-4" />
+                    <td className="px-2 py-2.5">
+                      <span
+                        className={needsReview ? 'text-amber-600' : 'text-violet-600'}
+                        title={(needsReview ? 'Contains invented values - review before use:\n' : '') + row.fixes.join('\n')}
+                      >
+                        {needsReview ? <Flag className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
                       </span>
                     </td>
                   )}
@@ -296,9 +309,9 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
             })}
           </tbody>
         </table>
-        
+
         {displayData.rows.length === 0 && (
-          <div className="text-center py-8 text-gray-500">
+          <div className="text-center py-8 text-slate-400">
             No data to display
           </div>
         )}
@@ -306,9 +319,9 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="border-t border-gray-200 px-4 py-3 bg-gray-50">
+        <div className="border-t border-slate-200 bg-slate-50/80 px-5 py-3">
           <div className="flex items-center justify-between">
-            <div className="text-sm text-gray-500">
+            <div className="text-sm text-slate-500 tabular-nums">
               Showing {startIndex + 1}-{Math.min(endIndex, displayData.rows.length)} of {displayData.rows.length} rows
             </div>
             <Pagination>
@@ -349,16 +362,17 @@ const CSVPreview = ({ data, errors = [], filename, processedData }) => {
 
       {/* Error details for highlighted tab */}
       {activeTab === 'highlighted' && errors.length > 0 && (
-        <div className="border-t border-gray-200 p-4 bg-red-50">
-          <h4 className="text-sm font-semibold text-red-800 mb-2">Issues Found:</h4>
-          <div className="space-y-1 text-sm text-red-700">
+        <div className="border-t border-rose-100 bg-rose-50/70 px-5 py-4">
+          <h4 className="mb-2 text-sm font-semibold text-rose-800">Issues Found</h4>
+          <div className="space-y-1 text-sm text-rose-700">
             {errors.slice(0, 5).map((error, index) => (
-              <div key={index}>
-                Row {error.row_index + 1}: {error.error_message}
+              <div key={index} className="flex items-start gap-2">
+                <span className="chip shrink-0 bg-white font-mono text-rose-600 ring-1 ring-rose-200">Row {error.row_index + 1}</span>
+                <span>{error.error_message}</span>
               </div>
             ))}
             {errors.length > 5 && (
-              <div className="text-red-600">
+              <div className="pt-1 text-rose-500">
                 ... and {errors.length - 5} more issues
               </div>
             )}
