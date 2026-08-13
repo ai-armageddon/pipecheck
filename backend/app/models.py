@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, BigInteger
+from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, BigInteger, UniqueConstraint
 from sqlalchemy.sql import func
 from .database import Base
 from datetime import datetime
@@ -21,6 +21,8 @@ class ErrorCode(str, enum.Enum):
     INVALID_EMAIL = "INVALID_EMAIL"
     INVALID_PHONE = "INVALID_PHONE"
     ROW_PROCESSING_ERROR = "ROW_PROCESSING_ERROR"
+    MALFORMED_ROW = "MALFORMED_ROW"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
 
 class IngestRun(Base):
     __tablename__ = "ingest_runs"
@@ -37,14 +39,21 @@ class IngestRun(Base):
     rows_updated = Column(Integer, default=0)
     rows_skipped = Column(Integer, default=0)
     rows_rejected = Column(Integer, default=0)
+    rows_flagged = Column(Integer, default=0)
     errors_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
 
 class DataRow(Base):
     __tablename__ = "data_rows"
-    
+
+    # Uniqueness is per run, not global: a run owns its own snapshot of the file
+    # so a later overlapping upload cannot take rows away from an earlier run.
+    __table_args__ = (
+        UniqueConstraint("run_id", "row_hash", name="uq_data_rows_run_id_row_hash"),
+    )
+
     id = Column(Integer, primary_key=True, autoincrement=True)
-    row_hash = Column(String, nullable=False, index=True, unique=True)
+    row_hash = Column(String, nullable=False, index=True)
     run_id = Column(String, nullable=False, index=True)
     row_index = Column(Integer, nullable=False)
     normalized_data = Column(Text, nullable=False)
