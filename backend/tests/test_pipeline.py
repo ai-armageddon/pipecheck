@@ -117,6 +117,85 @@ class TestMalformedLines:
         assert "Line 4" in reported[0]
         assert "Line 7" in reported[1]
 
+    @staticmethod
+    def reconciles(results):
+        return (
+            results["rows_inserted"] + results["rows_updated"]
+            + results["rows_skipped"] + results["rows_rejected"]
+        ) == results["total_rows"]
+
+    async def test_unterminated_quote_at_end_is_rejected_not_dropped(
+        self, processor, db, csv_file, make_run
+    ):
+        run_id = make_run()
+        path = csv_file('name,email\nok,a@b.com\nbad,"x@y.com\n')
+
+        results = await processor.process_csv(path, run_id)
+
+        assert results["total_rows"] == 2
+        assert results["rows_rejected"] == 1
+        assert self.reconciles(results)
+        malformed = db.query(ErrorLog).filter(ErrorLog.error_code == "MALFORMED_ROW").one()
+        assert "Line 3" in malformed.error_message
+        assert "never closed" in malformed.error_message
+        assert "x@y.com" in malformed.raw_data
+
+    async def test_unterminated_quote_mid_file_does_not_import_the_swallowed_lines(
+        self, processor, db, csv_file, make_run
+    ):
+        run_id = make_run()
+        path = csv_file('name,email\nfirst,a@b.com\n"broken,x@y.com\nlater,c@d.com\n')
+
+        results = await processor.process_csv(path, run_id)
+
+        assert results["rows_inserted"] == 1
+        assert results["rows_rejected"] == 1
+        assert self.reconciles(results)
+        assert "later,c@d.com" in db.query(ErrorLog).filter(
+            ErrorLog.error_code == "MALFORMED_ROW"
+        ).one().raw_data
+
+    async def test_early_long_row_does_not_shift_columns(
+        self, processor, db, csv_file, make_run
+    ):
+        run_id = make_run()
+        # pandas used to treat the first column as an index here and move
+        # every value one column to the left.
+        path = csv_file("id,label,extra\n1,short\n2,a,b,c,TOO_MANY\n3,c,d\n")
+
+        results = await processor.process_csv(path, run_id)
+
+        assert results["rows_rejected"] == 1
+        assert self.reconciles(results)
+        stored = sorted(
+            (json.loads(r.normalized_data) for r in db.query(DataRow).filter(DataRow.run_id == run_id)),
+            key=lambda row: row["id"],
+        )
+        assert [row["id"] for row in stored] == ["1", "3"]
+        assert stored[1]["label"] == "c"
+
+    async def test_text_after_closing_quote_keeps_the_row(
+        self, processor, db, csv_file, make_run
+    ):
+        run_id = make_run()
+        path = csv_file('name,note\n"Jane" ,x\nSam,y\n')
+
+        results = await processor.process_csv(path, run_id)
+
+        assert results["total_rows"] == 2
+        assert results["rows_inserted"] == 2
+
+    async def test_quoted_field_larger_than_the_csv_default_limit(
+        self, processor, db, csv_file, make_run
+    ):
+        run_id = make_run()
+        path = csv_file('name,note\nJane,"' + "x" * 200_000 + '"\nSam,y\n')
+
+        results = await processor.process_csv(path, run_id)
+
+        assert results["total_rows"] == 2
+        assert results["rows_inserted"] == 2
+
     async def test_quoted_delimiters_are_not_treated_as_malformed(
         self, processor, db, csv_file, make_run
     ):
@@ -304,3 +383,58 @@ class TestFileIntegrity:
 
         with pytest.raises(FileIntegrityError, match="Duplicate headers"):
             await processor.process_csv(csv_file("a,b,a\n1,2,3\n"), make_run())
+
+
+async def test_quoted_multiline_header_cannot_change_the_dialect(processor, csv_file, make_run, db):
+    run_id = make_run()
+    path = csv_file('id;"cost, units,\nEUR";sku\n1;2;KeepCase\n')
+    await processor.process_csv(path, run_id)
+    assert normalized(db, run_id) == [{"id": "1", "cost, units,\nEUR": "2", "sku": "KeepCase"}]
+
+
+async def test_mixed_ascii_prefix_and_utf8_tail(processor, csv_file, make_run, db):
+    run_id = make_run()
+    path = csv_file("id,label\n" + "1,ASCII\n" * 1600 + "2,東京\n")
+    await processor.process_csv(path, run_id)
+    assert normalized(db, run_id)[-1]["label"] == "東京"
+
+
+async def test_file_repair_keeps_original_bytes_and_flags_inferred_headers(processor, make_run, csv_file, db, monkeypatch):
+    from app.ai_fixer import AIFixer
+    from pathlib import Path
+    fixer = AIFixer("claude")
+    async def complete(prompt, system, max_tokens):
+        return '{"delimiter": "~", "can_be_fixed": true, "has_headers": false, "suggested_headers": ["id","note"]}'
+    monkeypatch.setattr(fixer, "complete", complete)
+    processor.fixer = fixer
+    run_id = make_run()
+    content = '1~"literal~value"\n2~text\n'
+    path = csv_file(content)
+    result = await processor.process_csv(path, run_id)
+    assert Path(path).read_text() == content
+    assert result["rows_flagged"] == result["errors_count"] == 2
+    assert normalized(db, run_id)[0]["note"] == "literal~value"
+
+
+async def test_groq_transport_repairs_without_using_live_credentials(monkeypatch):
+    import httpx
+    from groq import AsyncGroq
+    from app.ai_fixer import AIFixer
+    fixer = AIFixer("off")
+    fixer.provider = "groq"
+    def respond(request):
+        assert request.url.path.endswith("/chat/completions")
+        return httpx.Response(200, json={"id": "demo", "created": 1, "object": "chat.completion",
+            "model": "demo", "choices": [{"index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": '{"email":"demo@example.org"}'}}]})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        fixer.client = AsyncGroq(api_key="synthetic", http_client=client)
+        fixer.enabled = True
+        values, fixes = await fixer.fix_row({"email": "demo at example dot org"}, "Invalid email", ["email"])
+        assert values["email"] == "demo@example.org" and len(fixes) == 1
+
+
+async def test_single_column_csv_and_json_paste_input(processor, db, make_run, csv_file):
+    run_id = make_run()
+    await processor.process_csv(csv_file('sku\n"A,B"\nX-42\n'), run_id)
+    assert normalized(db, run_id) == [{"sku": "A,B"}, {"sku": "X-42"}]

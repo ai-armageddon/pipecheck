@@ -1,4 +1,5 @@
-from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, BigInteger, UniqueConstraint
+from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, BigInteger, UniqueConstraint, ForeignKey
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
 from datetime import datetime
@@ -42,6 +43,16 @@ class IngestRun(Base):
     rows_flagged = Column(Integer, default=0)
     errors_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
+
+    repair_settings = relationship("RunRepairSettings", uselist=False, cascade="all, delete-orphan")
+
+
+class RunRepairSettings(Base):
+    __tablename__ = "run_repair_settings"
+
+    run_id = Column(String, ForeignKey("ingest_runs.id"), primary_key=True)
+    provider = Column(String, nullable=False)
+
 
 class DataRow(Base):
     __tablename__ = "data_rows"

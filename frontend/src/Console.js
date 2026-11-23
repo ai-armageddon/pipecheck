@@ -65,21 +65,16 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
   );
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-lg shadow-slate-900/20">
+    <div className="console-panel">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/80 px-4 py-2.5">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-rose-500/80" />
-            <span className="h-2.5 w-2.5 rounded-full bg-amber-500/80" />
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/80" />
-          </div>
+      <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/80 px-3 py-2.5 sm:px-4">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <div className="flex items-center gap-2">
             <Terminal className="w-4 h-4 text-emerald-400" />
             <span className="text-sm font-medium text-slate-200">Console</span>
-            <span className="text-xs text-slate-500">({logs.length} messages)</span>
+            <span className="hidden text-xs text-slate-500 min-[430px]:inline">({logs.length} messages)</span>
             {persistedLogs > 0 && (
-              <span className="text-xs text-emerald-400" title="Logs persisted in browser storage">
+              <span className="hidden text-xs text-emerald-400 min-[520px]:inline" title="Logs persisted in browser storage">
                 ● {persistedLogs} saved
               </span>
             )}
@@ -95,7 +90,7 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
           </button>
           <button
             onClick={onClear}
-            className="rounded-md px-2 py-1 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100"
+            className="hidden rounded-md px-2 py-1 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100 sm:block"
             title="Clear current logs"
           >
             Clear
@@ -103,7 +98,7 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
           {onClearPersisted && (
             <button
               onClick={onClearPersisted}
-              className="rounded-md px-2 py-1 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+              className="hidden rounded-md px-2 py-1 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300 sm:block"
               title="Clear persisted logs"
             >
               Clear All
@@ -121,10 +116,10 @@ const Console = ({ logs, onClear, onClearPersisted, isExpanded, onToggle }) => {
 
       {/* Mini Console - Always visible when collapsed */}
       {!isExpanded && recentLogs.length > 0 && (
-        <div className="space-y-1 border-b border-slate-800 bg-slate-950 px-4 py-2.5">
+        <div className="space-y-1 border-b border-slate-800 bg-slate-950 px-3 py-2.5 sm:px-4">
           {recentLogs.map((log, index) => (
             <div key={index} className="flex items-start gap-2.5 text-xs font-mono">
-              <span className="shrink-0 tabular-nums text-slate-600">{log.timestamp}</span>
+              <span className="hidden shrink-0 tabular-nums text-slate-600 sm:inline">{log.timestamp}</span>
               <span className={`shrink-0 font-semibold ${levelColor(log.level)}`}>
                 {log.level.toUpperCase()}
               </span>

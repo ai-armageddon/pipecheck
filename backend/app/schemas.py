@@ -66,6 +66,7 @@ class ErrorDetail(BaseModel):
 class StatsResponse(BaseModel):
     total_runs: int
     completed_runs: int
+    partial_runs: int
     failed_runs: int
     success_rate: float
     total_rows_processed: int

@@ -10,13 +10,13 @@ An **AI-powered CSV ingestion pipeline** with automatic data cleaning, error fix
 
 ### Core Functionality
 - **Schema-Flexible Processing**: Accepts any CSV structure - no predefined schema required
-- **Large File Support**: Streaming uploads handle files 100MB+ without memory issues
+- **Large File Support**: Streaming uploads handle files up to the configurable 100MB limit without loading them into memory
 - **Deduplication**: SHA-256 hashing prevents duplicate rows and files
 - **Idempotent Uploads**: Re-uploading same file is safely skipped
 - **Batch Processing**: Processes rows in batches of 1000 for efficiency
 - **No Silent Loss**: Lines the parser cannot use are rejected and reported, never dropped quietly
 
-### AI-Powered Data Cleaning (Groq LLM)
+### AI-assisted data cleaning
 - **Row-Level Fixes**: AI automatically fixes validation errors per row
 - **File-Level Repairs**: Fixes delimiter issues and malformed headers
 - **Smart Inference**: Generates missing data from context (e.g., email from name)
@@ -25,10 +25,11 @@ An **AI-powered CSV ingestion pipeline** with automatic data cleaning, error fix
   passing it off as source data (see [Invented values](#invented-values))
 
 ### Modern Dashboard
-- **Drag & Drop Upload**: Upload CSV/Excel files with drag-drop or click
-- **Paste Support**: Paste CSV data directly or import from URL
+- **Drag & Drop Upload**: Upload CSV/Excel files with drag-drop or click (Excel imports the first worksheet)
+- **Paste Support**: Paste CSV or a JSON array of objects; JSON is converted to CSV locally before ingest
+- **Guided Demo**: Run or edit bundled CSV/JSON samples to learn the pipeline without preparing a file
 - **Real-time Progress**: WebSocket-powered live processing updates
-- **CSV Preview**: View original, processed, and error-highlighted data
+- **Run review**: Page through CSV and Excel results, compare source and cleaned values, filter issues, and download the original upload
 - **Pagination**: Navigate large datasets with shadcn/ui pagination
 - **Run Management**: View, reprocess, or delete previous runs
 - **Export Options**: Download processed data or error reports (CSV/Excel)
@@ -53,7 +54,7 @@ An **AI-powered CSV ingestion pipeline** with automatic data cleaning, error fix
 ### Prerequisites
 - Python 3.11 or 3.12 (the pinned `pandas`/`pydantic` builds have no wheels for 3.13+)
 - Node.js 18+
-- Groq API Key (optional, for AI features)
+- Optional AI repair through a Groq API key or a signed-in local Claude Code or Codex CLI
 
 ### Installation
 
@@ -128,6 +129,10 @@ pytest
 | `GET` | `/runs/{run_id}` | Get run details |
 | `GET` | `/runs/{run_id}/errors` | Get errors for a run |
 | `GET` | `/runs/{run_id}/data` | Get processed data (JSON) |
+| `GET` | `/runs/{run_id}/review` | Page through processed rows or issues with `view`, `offset`, and `limit` (1–100) |
+| `GET` | `/runs/{run_id}/source` | Download the retained original CSV or workbook |
+| `GET` | `/providers` | Check CLI sign-in, pending connections, and Groq configuration |
+| `POST` | `/providers/{provider}/connect` | Start native subscription sign-in for Claude Code or Codex on the backend machine. Supply the matching `X-PipeCheck-Provider` header. |
 | `POST` | `/runs/{run_id}/reprocess` | Reprocess existing file |
 | `DELETE` | `/runs/{run_id}` | Delete a run |
 | `DELETE` | `/runs` | Delete all runs |
@@ -150,8 +155,8 @@ pytest
         │                       │
         │                       ▼
         │               ┌─────────────────┐
-        │               │   Groq AI       │
-        │               │   (LLM Fixer)   │
+        │               │ Repair provider │
+        │               │ Claude/Codex/   │
         │               └─────────────────┘
         │
         ▼
@@ -233,7 +238,27 @@ counted as `rows_updated` without being taken away from that run.
 | `NEEDS_REVIEW` | Row was imported after a fix that invented a value |
 | `PROCESSING_ERROR` | Unexpected failure while handling the row |
 
-## AI Features (Groq Integration)
+## AI repair providers
+
+Open **AI provider** in the dashboard header. The selected provider applies to uploads and reprocessing from this browser. **Run Details** records the choice for each new or reprocessed run. Deterministic cleanup runs first. When AI repair is needed, the selected provider receives the affected row or a sample of the file. Model-generated values appear in the review queue.
+
+| Provider | Setup on the machine running the backend |
+| --- | --- |
+| Local cleanup only | Select this to process data entirely on the machine. |
+| Groq | Set `GROQ_API_KEY` in `backend/.env`, restart the API, then select Groq. |
+| Claude Code | Install the official `claude` CLI. Click **Connect Claude subscription** and sign in to your Claude account in the browser it opens. |
+| Codex | Install the official `codex` CLI. Click **Connect ChatGPT subscription** and finish ChatGPT sign-in in the browser it opens. |
+
+The panel updates automatically after sign-in. Select the connected provider to use it for new uploads and reprocessing. If the backend has no desktop browser, run `claude auth login` or `codex login` in its terminal and use **Refresh connections**. PipeCheck invokes the installed CLI in a temporary directory for each repair. The CLI manages its own credentials. Subscription access is for the local owner's loopback dashboard. A container has its own executable path and login environment. The stock Docker image supports Groq and local cleanup.
+
+API callers can set the `X-PipeCheck-Provider` request header on `POST /upload` and `POST /runs/{id}/reprocess` to `off`, `groq`, `claude`, or `codex`. Omitting it uses Groq when configured, otherwise local cleanup. Duplicate uploads return the original run. Reprocess to apply another provider.
+
+### Reviewing a run
+
+**Processed** displays stored output in source-record order. Select a row number to compare fields side by side and read its repair history. **Issues** can show all entries, flagged records, or rejections. **Original file** downloads the retained bytes, including duplicate and rejected records. The **Original** tab also previews recently uploaded small CSVs.
+
+Displayed row numbers start at 1 after the header. A quoted multiline record occupies one row. Physical line numbers in parse errors identify the location in the file. Runs processed by older versions keep their stored indices until reprocessed.
+
 
 ### Row-Level Fixing
 When validation fails, the AI attempts to fix:
@@ -271,7 +296,7 @@ punctuation from a phone number — is not flagged, because nothing is invented.
 GROQ_API_KEY=your_groq_api_key_here
 ```
 
-The AI uses `llama-3.1-8b-instant` model with rate limiting (0.5s between calls).
+Groq defaults to `llama-3.1-8b-instant`. Set `GROQ_MODEL` to override it. Local CLIs use their default model.
 
 ## Project Structure
 
@@ -283,7 +308,7 @@ pipecheck/
 │   │   ├── models.py        # SQLAlchemy models
 │   │   ├── schemas.py       # Pydantic schemas
 │   │   ├── pipeline.py      # CSV processing logic
-│   │   ├── ai_fixer.py      # Groq AI integration
+│   │   ├── ai_fixer.py      # Provider-independent repair logic
 │   │   └── database.py      # Database config
 │   ├── tests/               # pytest suite
 │   ├── uploads/             # Retained source files (for reprocess)
@@ -315,14 +340,15 @@ pipecheck/
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GROQ_API_KEY` | Groq API key for AI features | None (AI disabled) |
+| `GROQ_API_KEY` | Groq API key | None |
+| `MAX_UPLOAD_BYTES` | Maximum size of a retained upload | 104857600 |
 | `DATABASE_URL` | Database connection string | `sqlite:///./pipecheck.db` |
-| `CORS_ORIGINS` | Comma-separated allowed browser origins | `http://localhost:3000` |
+| `CORS_ORIGINS` | Comma-separated allowed browser origins | `http://localhost:3000,http://127.0.0.1:3000` |
 | `REACT_APP_API_URL` | Backend URL the frontend calls (build-time) | `http://localhost:8001` |
 
 ### Large File Handling
 - **Backend**: Streams uploads in 1MB chunks
-- **Frontend**: Preview disabled for files >10MB
+- **Frontend**: Processed rows and issues load one page at a time. Local source-text previews are limited to CSV files up to 2 MiB.
 - **Processing**: Batches of 1000 rows
 
 ### Disk Usage
@@ -370,7 +396,7 @@ curl -X POST "http://localhost:8001/runs/{run_id}/reprocess"
 - **Database**: PostgreSQL for production
 - **File Storage**: S3 for uploaded files
 - **Queue**: Redis/Celery for async processing
-- **Scaling**: Multiple uvicorn workers behind nginx
+- **Scaling**: Single worker for in-process run tracking and WebSockets
 - **Monitoring**: Prometheus + Grafana
 
 ### Security Checklist
@@ -379,7 +405,7 @@ curl -X POST "http://localhost:8001/runs/{run_id}/reprocess"
 - [ ] Enable HTTPS
 - [ ] Add rate limiting
 - [ ] Implement authentication
-- [ ] Add an upload size limit
+- [x] Enforce the configured upload size limit
 - [ ] Rotate API keys
 
 > The API is unauthenticated: anyone who can reach it can upload files and delete

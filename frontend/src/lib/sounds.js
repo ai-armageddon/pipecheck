@@ -6,9 +6,10 @@ class SoundManager {
     this.volume = 0.15; // Lower volume for subtlety
     
     // Load preference from localStorage
-    const savedEnabled = localStorage.getItem('csvSoundsEnabled');
-    if (savedEnabled !== null) {
-      this.enabled = JSON.parse(savedEnabled);
+    try {
+      this.enabled = localStorage.getItem('csvSoundsEnabled') !== 'false';
+    } catch {
+      this.enabled = true;
     }
   }
 
@@ -21,7 +22,11 @@ class SoundManager {
 
   setEnabled(enabled) {
     this.enabled = enabled;
-    localStorage.setItem('csvSoundsEnabled', JSON.stringify(enabled));
+    try {
+      localStorage.setItem('csvSoundsEnabled', JSON.stringify(enabled));
+    } catch {
+      // The in-memory preference still applies when storage is unavailable.
+    }
   }
 
   setVolume(volume) {
@@ -30,7 +35,7 @@ class SoundManager {
 
   // Play a soft tone with envelope for pleasant sound
   playTone(frequency, duration = 0.1, type = 'sine', attack = 0.01, decay = 0.05) {
-    if (!this.enabled) return;
+    if (!this.enabled || (navigator.userActivation && !navigator.userActivation.hasBeenActive)) return;
     
     try {
       const ctx = this.getContext();

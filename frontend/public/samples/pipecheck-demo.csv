@@ -1,0 +1,5 @@
+name,email,phone,city,state,customer_tier
+Jane Doe,Jane.Doe@Example.com,(907) 555-0101,Anchorage,ak,Professional
+Miguel Santos,miguel.santos.example.com,555-3333,"Austin, Metro",tx,Growth
+Priya Shah,priya@example.org,+1 212 555 0199,New York,ny,Enterprise
+Sam Rivers,sam@example.net,123,Seattle,wa,Starter

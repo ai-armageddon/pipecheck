@@ -8,8 +8,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
 # Point the app at a throwaway database before app.database is imported.
-os.environ.setdefault("DATABASE_URL", "sqlite://")
-os.environ.pop("GROQ_API_KEY", None)
+os.environ["DATABASE_URL"] = "sqlite://"
+os.environ["GROQ_API_KEY"] = ""
 
 from app.database import Base, engine, SessionLocal  # noqa: E402
 from app.pipeline import CSVProcessor  # noqa: E402

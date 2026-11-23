@@ -14,3 +14,5 @@ xlrd==2.0.1
 chardet==5.2.0
 groq==0.4.2
 python-dotenv==1.0.0
+# Groq 0.4 and the Starlette test client require the pre-0.28 HTTP client API.
+httpx==0.27.2

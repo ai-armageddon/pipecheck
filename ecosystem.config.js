@@ -40,6 +40,7 @@ module.exports = {
       // pm2's bundled static file server - no extra dependency needed.
       script: 'serve',
       env: {
+        PM2_SERVE_HOST: '127.0.0.1',
         PM2_SERVE_PATH: './build',
         PM2_SERVE_PORT: '3000',
         PM2_SERVE_SPA: 'true',

@@ -1,8 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, Query, Header, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Literal
 import uuid
 import pandas as pd
 import io
@@ -15,10 +15,15 @@ from pathlib import Path
 from datetime import datetime
 import structlog
 from contextlib import asynccontextmanager
+from sqlalchemy.orm import joinedload
 from sqlalchemy import func
+from ipaddress import ip_address
+from urllib.parse import urlparse
+from .providers import CLI_LOGIN, CLIProvider, Provider, ProviderError, cli_status, login_cli
+from .ai_fixer import AIFixer, ai_fixer
 import asyncio
 from .database import SessionLocal, engine, Base, DATABASE_URL, legacy_row_hash_index
-from .models import IngestRun, DataRow, ErrorLog, RunStatus, ErrorCode
+from .models import IngestRun, DataRow, ErrorLog, RunStatus, ErrorCode, RunRepairSettings
 from .schemas import IngestRunResponse, RunDetail, ErrorDetail, StatsResponse, IngestRun as IngestRunSchema
 from .pipeline import CSVProcessor, FileIntegrityError, ValidationError
 
@@ -107,7 +112,7 @@ def websocket_logger(logger, method_name: str, event_dict):
                 "data": event_dict
             }
             asyncio.create_task(manager.broadcast(json.dumps(message)))
-    except:
+    except Exception:
         # If no event loop or any other error, just skip WebSocket logging
         pass
     
@@ -140,6 +145,47 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
+INTERRUPTED_RUN_MESSAGE = "Interrupted by a server restart. Reprocess the run to retry."
+
+
+def recover_interrupted_runs() -> int:
+    """Fail runs that a previous process left pending or processing.
+
+    Background tasks die with the process, so nothing can still be working on
+    them at startup. Left alone they would block delete and reprocess forever.
+    """
+    db = SessionLocal()
+    try:
+        count = db.query(IngestRun).filter(
+            IngestRun.status.in_([RunStatus.PENDING, RunStatus.PROCESSING])
+        ).update(
+            {
+                IngestRun.status: RunStatus.FAILED,
+                IngestRun.completed_at: datetime.utcnow(),
+                IngestRun.error_message: INTERRUPTED_RUN_MESSAGE,
+            },
+            synchronize_session=False,
+        )
+        db.commit()
+        return count
+    finally:
+        db.close()
+
+
+def mark_run_failed(db, run_id: str, message: str) -> None:
+    """Record a failed run even if the session was left needing a rollback."""
+    try:
+        db.rollback()
+        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+        if run:
+            run.status = RunStatus.FAILED
+            run.completed_at = datetime.utcnow()
+            run.error_message = message
+            db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("Could not record run failure", run_id=run_id, exc_info=True)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if legacy_row_hash_index():
@@ -150,7 +196,20 @@ async def lifespan(app: FastAPI):
             database_url=DATABASE_URL,
         )
     Base.metadata.create_all(bind=engine)
-    yield
+    interrupted = recover_interrupted_runs()
+    if interrupted:
+        logger.warning(
+            "Marked runs interrupted by a previous shutdown as failed",
+            count=interrupted,
+        )
+    app.state.provider_logins = {}
+    try:
+        yield
+    finally:
+        tasks = list(app.state.provider_logins.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 app = FastAPI(
     title="PipeCheck API",
@@ -161,7 +220,7 @@ app = FastAPI(
 
 CORS_ORIGINS = [
     origin.strip()
-    for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
     if origin.strip()
 ]
 
@@ -178,19 +237,81 @@ active_runs: Dict[str, Dict] = {}
 
 # Uploads are retained after processing so runs can be reprocessed.
 UPLOAD_DIR = Path("uploads")
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
 
 @app.get("/")
 async def root():
     return {"message": "PipeCheck API - CSV ingestion pipeline"}
 
+def local_cli_access(request: Request) -> bool:
+    # Only the local owner may spend a CLI session. CLI selections use a custom
+    # header, so cross-origin browser callers must also pass the CORS preflight.
+    hosts = {"127.0.0.1", "localhost", "::1"}
+    origin = request.headers.get("origin")
+    try:
+        return (request.client is not None and ip_address(request.client.host).is_loopback
+                and request.url.hostname in hosts
+                and (origin is None or urlparse(origin).hostname in hosts))
+    except ValueError:
+        return False
+
+
+@app.get("/providers")
+async def list_providers(request: Request):
+    cli = list(CLI_LOGIN)
+    states = (await asyncio.gather(*(cli_status(name) for name in cli))
+              if local_cli_access(request) else ["local_only"] * len(cli))
+    connections = {}
+    if local_cli_access(request):
+        for name, task in request.app.state.provider_logins.items():
+            connections[name] = task.result() if task.done() else "pending"
+    return {"default": "groq" if ai_fixer.enabled else "off", "connections": connections,
+            "states": {"off": "ready", "groq": "configured" if ai_fixer.enabled else "missing_key",
+                       **dict(zip(cli, states))}}
+
+
+@app.post("/providers/{provider}/connect")
+async def connect_provider(provider: CLIProvider, request: Request, x_pipecheck_provider: str = Header(...)):
+    if not local_cli_access(request) or x_pipecheck_provider != provider:
+        raise HTTPException(403, "Start sign-in from the local PipeCheck dashboard.")
+    tasks = request.app.state.provider_logins
+    task = tasks.get(provider)
+    if task and not task.done():
+        return JSONResponse({"connection": "pending"}, status_code=202)
+    state = await cli_status(provider)
+    if state == "subscription":
+        return {"connection": "connected"}
+    if state not in ("signed_out", "authenticated"):
+        raise HTTPException(409, f"Check that the {provider} CLI is installed and available to the backend.")
+    # Another browser tab may have started sign-in while the status command ran.
+    task = tasks.get(provider)
+    if task is None or task.done():
+        tasks[provider] = asyncio.create_task(login_cli(provider))
+    return JSONResponse({"connection": "pending"}, status_code=202)
+
+
+async def selected_provider(request: Request, x_pipecheck_provider: Optional[Provider] = Header(None)):
+    if x_pipecheck_provider is None:
+        return "groq" if ai_fixer.enabled else "off"
+    if x_pipecheck_provider in CLI_LOGIN:
+        if not local_cli_access(request):
+            raise HTTPException(403, "Local CLI sessions are available on the backend machine only.")
+        if await cli_status(x_pipecheck_provider) not in ("authenticated", "subscription"):
+            raise HTTPException(409, f"Sign in on the backend machine with `{CLI_LOGIN[x_pipecheck_provider]}`.")
+    if x_pipecheck_provider == "groq" and not ai_fixer.enabled:
+        raise HTTPException(409, "Set GROQ_API_KEY on the backend and restart PipeCheck.")
+    return x_pipecheck_provider
+
+
 @app.post("/upload", response_model=IngestRunResponse)
 async def upload_csv(
     background_tasks: BackgroundTasks,
+    provider: Provider = Depends(selected_provider),
     file: UploadFile = File(...),
     force: bool = Query(False, description="Force upload even if file hash exists")
 ):
-    if not (file.filename.endswith('.csv') or 
-            file.filename.endswith(('.xlsx', '.xls', '.xlsm'))):
+    original_name = Path(file.filename or "").name
+    if not original_name or Path(original_name).suffix.lower() not in {'.csv', '.xlsx', '.xls', '.xlsm'}:
         raise HTTPException(status_code=400, detail="Only CSV and Excel files are allowed")
     
     run_id = str(uuid.uuid4())
@@ -199,87 +320,110 @@ async def upload_csv(
     upload_dir = UPLOAD_DIR
     upload_dir.mkdir(exist_ok=True)
     # Keep only the base name: a crafted filename must not escape uploads/.
-    safe_name = Path(file.filename).name
+    safe_name = original_name
     file_path = upload_dir / f"{run_id}_{safe_name}"
     
     file_hash = hashlib.sha256()
     file_size = 0
     chunk_size = 1024 * 1024  # 1MB chunks
     
-    with open(file_path, "wb") as f:
-        while True:
-            chunk = await file.read(chunk_size)
-            if not chunk:
-                break
-            f.write(chunk)
-            file_hash.update(chunk)
-            file_size += len(chunk)
+    try:
+        with open(file_path, "wb") as f:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds the {MAX_UPLOAD_BYTES // 1024 // 1024} MB upload limit",
+                    )
+                f.write(chunk)
+                file_hash.update(chunk)
+    except Exception:
+        file_path.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+    if file_size == 0:
+        file_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
     
     file_hash_hex = file_hash.hexdigest()
-    logger.info("File uploaded", run_id=run_id, filename=file.filename, size_mb=round(file_size / 1024 / 1024, 2))
+    logger.info("File uploaded", run_id=run_id, filename=safe_name, size_mb=round(file_size / 1024 / 1024, 2))
     
-    db = next(get_db())
-    
-    existing_run = db.query(IngestRun).filter(
-        IngestRun.file_hash == file_hash_hex
-    ).first()
-    
-    if existing_run and not force:
-        # Clean up the file we just saved
-        try:
-            os.remove(file_path)
-        except:
-            pass
-        logger.info("Duplicate file detected", run_id=run_id, existing_run_id=existing_run.id)
-        return JSONResponse(
-            status_code=200,
-            content={
-                "run_id": existing_run.id,
-                "status": "skipped",
-                "message": "File already processed",
-                "created_at": existing_run.created_at.isoformat(),
-                "completed_at": existing_run.completed_at.isoformat() if existing_run.completed_at else None,
-                "total_rows": existing_run.total_rows,
-                "rows_inserted": existing_run.rows_inserted,
-                "rows_updated": existing_run.rows_updated,
-                "rows_skipped": existing_run.rows_skipped,
-                "errors_count": existing_run.errors_count
-            }
-        )
-    
-    run = IngestRun(
-        id=run_id,
-        filename=file.filename,
-        file_hash=file_hash_hex,
-        status=RunStatus.PENDING,
-        created_at=datetime.utcnow()
-    )
-    
-    db.add(run)
-    db.commit()
-    
-    active_runs[run_id] = {"status": "processing", "progress": 0}
-    
-    background_tasks.add_task(process_csv_file, run_id, str(file_path))
-    
-    return IngestRunResponse(
-        run_id=run_id,
-        status=RunStatus.PENDING,
-        message="File uploaded successfully",
-        created_at=run.created_at,
-        total_rows=0,
-        rows_inserted=0,
-        rows_updated=0,
-        rows_skipped=0,
-        errors_count=0
-    )
+    with SessionLocal() as db:
 
-async def process_csv_file(run_id: str, file_path: str):
+        existing_run = db.query(IngestRun).filter(
+            IngestRun.file_hash == file_hash_hex
+        ).first()
+
+        if existing_run and not force:
+            # Clean up the file we just saved
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            logger.info("Duplicate file detected", run_id=run_id, existing_run_id=existing_run.id)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "run_id": existing_run.id,
+                    "status": "skipped",
+                    "message": "File already processed",
+                    "created_at": existing_run.created_at.isoformat(),
+                    "completed_at": existing_run.completed_at.isoformat() if existing_run.completed_at else None,
+                    "total_rows": existing_run.total_rows,
+                    "rows_inserted": existing_run.rows_inserted,
+                    "rows_updated": existing_run.rows_updated,
+                    "rows_skipped": existing_run.rows_skipped,
+                    "rows_rejected": existing_run.rows_rejected,
+                    "rows_flagged": existing_run.rows_flagged,
+                    "errors_count": existing_run.errors_count
+                }
+            )
+
+        run = IngestRun(
+            id=run_id,
+            filename=safe_name,
+            file_hash=file_hash_hex,
+            status=RunStatus.PENDING,
+            created_at=datetime.utcnow()
+        )
+
+        run.repair_settings = RunRepairSettings(provider=provider)
+        db.add(run)
+        try:
+            db.commit()
+        except Exception:
+            file_path.unlink(missing_ok=True)
+            raise
+
+        active_runs[run_id] = {"status": "processing", "progress": 0}
+
+        background_tasks.add_task(process_csv_file, run_id, str(file_path), provider)
+
+        return IngestRunResponse(
+            run_id=run_id,
+            status=RunStatus.PENDING,
+            message="File uploaded successfully",
+            created_at=run.created_at,
+            total_rows=0,
+            rows_inserted=0,
+            rows_updated=0,
+            rows_skipped=0,
+            errors_count=0
+        )
+
+
+async def process_csv_file(run_id: str, file_path: str, provider: Provider):
     run_logger = logger.bind(correlation_id=run_id, run_id=run_id)
     run_logger.info("Starting background processing task", file_path=file_path)
     
     db = SessionLocal()
-    processor = CSVProcessor(db)
+    processor = CSVProcessor(db, ai_fixer if provider == "groq" else AIFixer(provider))
     
     try:
         run_logger.info("Starting CSV processing", file_path=file_path)
@@ -297,32 +441,17 @@ async def process_csv_file(run_id: str, file_path: str):
         
         run_logger.info("CSV processing completed", **results)
         
-    except FileIntegrityError as e:
+    except (ProviderError, FileIntegrityError) as e:
         run_logger.error("File integrity error", error=str(e))
-        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
-        if run:
-            run.status = RunStatus.FAILED
-            run.completed_at = datetime.utcnow()
-            run.error_message = str(e)
-            db.commit()
+        mark_run_failed(db, run_id, str(e))
             
     except ValidationError as e:
         run_logger.error("Validation error", error=str(e))
-        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
-        if run:
-            run.status = RunStatus.FAILED
-            run.completed_at = datetime.utcnow()
-            run.error_message = str(e)
-            db.commit()
+        mark_run_failed(db, run_id, str(e))
             
     except Exception as e:
         run_logger.error("Unexpected error during processing", error=str(e), exc_info=True)
-        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
-        if run:
-            run.status = RunStatus.FAILED
-            run.completed_at = datetime.utcnow()
-            run.error_message = f"Internal error: {str(e)}"
-            db.commit()
+        mark_run_failed(db, run_id, f"Internal error: {str(e)}")
             
     finally:
         # The source file is deliberately retained so /runs/{id}/reprocess can
@@ -353,97 +482,83 @@ def discard_stored_files(run_ids: List[str]):
         except OSError as e:
             logger.warning("Could not remove stored upload", run_id=run_id, error=str(e))
 
-@app.get("/runs")
-async def get_runs():
-    db = next(get_db())
-    runs = db.query(IngestRun).order_by(IngestRun.created_at.desc()).limit(50).all()
-    
-    return [
-        {
-            "run_id": run.id,
-            "filename": run.filename,
-            "status": run.status,
-            "created_at": run.created_at.isoformat(),
-            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-            "total_rows": run.total_rows,
-            "rows_inserted": run.rows_inserted,
-            "rows_updated": run.rows_updated,
-            "rows_skipped": run.rows_skipped,
-            "rows_rejected": run.rows_rejected,
-            "rows_flagged": run.rows_flagged,
-            "errors_count": run.errors_count,
-            "error_message": run.error_message
-        }
-        for run in runs
-    ]
-
-@app.get("/runs/{run_id}")
-async def get_run(run_id: str):
-    db = next(get_db())
-    run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
-    
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    
+def run_details(run):
     return {
-        "run_id": run.id,
-        "filename": run.filename,
-        "status": run.status,
+        "run_id": run.id, "filename": run.filename, "status": run.status,
         "created_at": run.created_at.isoformat(),
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-        "total_rows": run.total_rows,
-        "rows_inserted": run.rows_inserted,
-        "rows_updated": run.rows_updated,
-        "rows_skipped": run.rows_skipped,
-        "rows_rejected": run.rows_rejected,
-        "rows_flagged": run.rows_flagged,
-        "errors_count": run.errors_count,
-        "error_message": run.error_message
+        "total_rows": run.total_rows, "rows_inserted": run.rows_inserted, "rows_updated": run.rows_updated,
+        "rows_skipped": run.rows_skipped, "rows_rejected": run.rows_rejected, "rows_flagged": run.rows_flagged,
+        "errors_count": run.errors_count, "error_message": run.error_message,
+        "repair_provider": run.repair_settings.provider if run.repair_settings else None,
     }
+
+
+@app.get("/runs")
+async def get_runs(db=Depends(get_db)):
+    runs = db.query(IngestRun).options(joinedload(IngestRun.repair_settings)).order_by(IngestRun.created_at.desc())
+    return [run_details(run) for run in runs.limit(50)]
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: str, db=Depends(get_db)):
+    run = db.get(IngestRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run_details(run)
+
 
 @app.get("/runs/{run_id}/errors")
 async def get_run_errors(run_id: str):
-    db = next(get_db())
-    errors = db.query(ErrorLog).filter(ErrorLog.run_id == run_id).all()
-    
-    return [
-        {
-            "id": error.id,
-            "row_index": error.row_index,
-            "error_code": error.error_code,
-            "error_message": error.error_message,
-            "created_at": error.created_at.isoformat()
-        }
-        for error in errors
-    ]
+    with SessionLocal() as db:
+        errors = db.query(ErrorLog).filter(ErrorLog.run_id == run_id).all()
+
+        return [
+            {
+                "id": error.id,
+                "row_index": error.row_index,
+                "error_code": error.error_code,
+                "error_message": error.error_message,
+                "created_at": error.created_at.isoformat()
+            }
+            for error in errors
+        ]
+
 
 @app.get("/stats")
 async def get_stats():
-    db = next(get_db())
-    
-    total_runs = db.query(IngestRun).count()
-    completed_runs = db.query(IngestRun).filter(IngestRun.status == RunStatus.COMPLETED).count()
-    failed_runs = db.query(IngestRun).filter(IngestRun.status == RunStatus.FAILED).count()
-    
-    last_run = db.query(IngestRun).order_by(IngestRun.created_at.desc()).first()
-    
-    total_rows_processed = db.query(IngestRun).filter(IngestRun.status == RunStatus.COMPLETED).with_entities(
-        func.sum(IngestRun.total_rows)
-    ).scalar() or 0
-    
-    return {
-        "total_runs": total_runs,
-        "completed_runs": completed_runs,
-        "failed_runs": failed_runs,
-        "success_rate": (completed_runs / total_runs * 100) if total_runs > 0 else 0,
-        "total_rows_processed": total_rows_processed,
-        "last_run": {
-            "run_id": last_run.id,
-            "status": last_run.status,
-            "created_at": last_run.created_at.isoformat() if last_run else None
-        } if last_run else None
-    }
+    with SessionLocal() as db:
+
+        total_runs = db.query(IngestRun).count()
+        completed_runs = db.query(IngestRun).filter(IngestRun.status == RunStatus.COMPLETED).count()
+        partial_runs = db.query(IngestRun).filter(IngestRun.status == RunStatus.PARTIAL_SUCCESS).count()
+        failed_runs = db.query(IngestRun).filter(IngestRun.status == RunStatus.FAILED).count()
+
+        last_run = db.query(IngestRun).order_by(IngestRun.created_at.desc()).first()
+
+        total_rows_processed = db.query(IngestRun).filter(
+            IngestRun.status.in_([RunStatus.COMPLETED, RunStatus.PARTIAL_SUCCESS])
+        ).with_entities(
+            func.sum(IngestRun.total_rows)
+        ).scalar() or 0
+
+        finished_runs = completed_runs + partial_runs + failed_runs
+
+        return {
+            "total_runs": total_runs,
+            "completed_runs": completed_runs,
+            "partial_runs": partial_runs,
+            "failed_runs": failed_runs,
+            "success_rate": ((completed_runs + partial_runs) / finished_runs * 100) if finished_runs else 0,
+            "total_rows_processed": total_rows_processed,
+            "last_run": {
+                "run_id": last_run.id,
+                "status": last_run.status,
+                "created_at": last_run.created_at.isoformat() if last_run else None
+            } if last_run else None
+        }
+
 
 @app.get("/health")
 async def health_check():
@@ -452,26 +567,72 @@ async def health_check():
 @app.get("/runs/{run_id}/data")
 async def get_run_data(run_id: str):
     """Get processed data for a run as JSON (for preview)"""
-    db = next(get_db())
-    
-    run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    
-    data_rows = db.query(DataRow).filter(DataRow.run_id == run_id).all()
-    
-    # Convert to list of dicts
-    data = []
-    for row in data_rows:
-        normalized_data = json.loads(row.normalized_data)
-        data.append(normalized_data)
-    
-    return {
-        "run_id": run_id,
-        "filename": run.filename,
-        "total_rows": len(data),
-        "data": data
-    }
+    with SessionLocal() as db:
+
+        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        data_rows = db.query(DataRow).filter(DataRow.run_id == run_id).order_by(DataRow.row_index).all()
+
+        # Convert to list of dicts
+        data = []
+        for row in data_rows:
+            normalized_data = json.loads(row.normalized_data)
+            data.append(normalized_data)
+
+        return {
+            "run_id": run_id,
+            "filename": run.filename,
+            "total_rows": len(data),
+            "data": data
+        }
+
+
+@app.get("/runs/{run_id}/source")
+async def download_source(run_id: str, db=Depends(get_db)):
+    run = db.get(IngestRun, run_id)
+    stored = stored_file_for(run.id) if run else None
+    if not stored:
+        raise HTTPException(404, "Original upload is unavailable.")
+    return FileResponse(stored, filename=run.filename, media_type="application/octet-stream")
+
+
+def stored_json(value):
+    # Older runs recorded pandas' missing values as the non-standard JSON NaN.
+    return json.loads(value, parse_constant=lambda _: None) if value else {}
+
+
+@app.get("/runs/{run_id}/review")
+async def review_run(run_id: str, view: Literal["processed", "issues", "flagged", "rejected"] = "processed",
+                     offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100),
+                     db=Depends(get_db)):
+    if not db.get(IngestRun, run_id):
+        raise HTTPException(404, "Run not found")
+    model = DataRow if view == "processed" else ErrorLog
+    query = db.query(model).filter_by(run_id=run_id)
+    if view == "flagged":
+        query = query.filter(ErrorLog.error_code == "NEEDS_REVIEW")
+    elif view == "rejected":
+        query = query.filter(ErrorLog.error_code != "NEEDS_REVIEW")
+    total = query.count()
+    rows = []
+    for record in query.order_by(model.row_index, model.id).offset(offset).limit(limit):
+        row = {"row_index": record.row_index, "original": stored_json(record.raw_data)}
+        if view == "processed":
+            values = stored_json(record.normalized_data)
+            fixes = values.get("_fixes_applied")
+            if isinstance(fixes, list):
+                values.pop("_fixes_applied")
+            flagged = values.get("_needs_review") is True
+            if flagged:
+                values.pop("_needs_review")
+            row.update(fixes=fixes if isinstance(fixes, list) else [], needs_review=flagged, values=values)
+        else:
+            row.update(code=record.error_code, message=record.error_message)
+        rows.append(row)
+    return {"total": total, "rows": rows}
+
 
 def export_ready(record: Dict) -> Dict:
     """Rename internal markers so a spreadsheet shows which values were invented."""
@@ -500,7 +661,7 @@ def spreadsheet_response(df: pd.DataFrame, base_name: str, format: str) -> Strea
     output.seek(0)
     
     return StreamingResponse(
-        io.BytesIO(output.read()),
+        output,
         media_type=media_type,
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
@@ -508,48 +669,50 @@ def spreadsheet_response(df: pd.DataFrame, base_name: str, format: str) -> Strea
 # Declared before /export/{run_id}: otherwise "all" is matched as a run id.
 @app.get("/export/all")
 async def export_all_data(format: str = "csv"):
-    db = next(get_db())
-    
-    # Get all successful data rows
-    data_rows = db.query(DataRow).all()
-    
-    if not data_rows:
-        raise HTTPException(status_code=404, detail="No data has been ingested yet")
-    
-    # Convert to DataFrame
-    data = []
-    for row in data_rows:
-        normalized_data = json.loads(row.normalized_data)
-        normalized_data['run_id'] = row.run_id  # Add run_id for reference
-        data.append(export_ready(normalized_data))
-    
-    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    return spreadsheet_response(pd.DataFrame(data), f"pipecheck_all_export_{stamp}", format)
+    with SessionLocal() as db:
+
+        # Get all successful data rows
+        data_rows = db.query(DataRow).order_by(DataRow.run_id, DataRow.row_index).all()
+
+        if not data_rows:
+            raise HTTPException(status_code=404, detail="No data has been ingested yet")
+
+        # Convert to DataFrame
+        data = []
+        for row in data_rows:
+            normalized_data = json.loads(row.normalized_data)
+            normalized_data['run_id'] = row.run_id  # Add run_id for reference
+            data.append(export_ready(normalized_data))
+
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        return spreadsheet_response(pd.DataFrame(data), f"pipecheck_all_export_{stamp}", format)
+
 
 @app.get("/export/{run_id}")
 async def export_data(run_id: str, format: str = "csv"):
-    db = next(get_db())
-    
-    # Get the run
-    run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    
-    # Get all data rows for this run
-    data_rows = db.query(DataRow).filter(DataRow.run_id == run_id).all()
-    
-    if not data_rows:
-        raise HTTPException(status_code=404, detail="No data found for this run")
-    
-    # Convert to DataFrame
-    data = [export_ready(json.loads(row.normalized_data)) for row in data_rows]
-    
-    return spreadsheet_response(pd.DataFrame(data), f"pipecheck_export_{run_id}", format)
+    with SessionLocal() as db:
+
+        # Get the run
+        run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        # Get all data rows for this run
+        data_rows = db.query(DataRow).filter(DataRow.run_id == run_id).order_by(DataRow.row_index).all()
+
+        if not data_rows:
+            raise HTTPException(status_code=404, detail="No data found for this run")
+
+        # Convert to DataFrame
+        data = [export_ready(json.loads(row.normalized_data)) for row in data_rows]
+
+        return spreadsheet_response(pd.DataFrame(data), f"pipecheck_export_{run_id}", format)
+
 
 @app.get("/errors/{run_id}/export")
 async def export_error_report(run_id: str, format: str = "csv"):
     """Export detailed error report for rejected rows"""
-    db = next(get_db())
+    db = SessionLocal()
     processor = CSVProcessor(db)
     
     try:
@@ -587,7 +750,7 @@ async def export_error_report(run_id: str, format: str = "csv"):
         logger.info("Error report exported", run_id=run_id, format=format, rows=len(error_report))
         
         return StreamingResponse(
-            io.BytesIO(output.read()),
+            output,
             media_type=media_type,
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
@@ -603,7 +766,11 @@ async def websocket_endpoint(websocket: WebSocket, run_id: str):
             # Keep connection alive
             await asyncio.sleep(10)
             await websocket.send_json({"type": "ping"})
-    except WebSocketDisconnect:
+    except Exception:
+        # Browser refreshes and process restarts can surface transport-specific
+        # close exceptions in addition to Starlette's WebSocketDisconnect.
+        pass
+    finally:
         manager.disconnect(websocket, run_id)
 
 @app.websocket("/ws")
@@ -614,13 +781,15 @@ async def websocket_global(websocket: WebSocket):
             # Keep connection alive
             await asyncio.sleep(10)
             await websocket.send_json({"type": "ping"})
-    except WebSocketDisconnect:
+    except Exception:
+        pass
+    finally:
         manager.disconnect(websocket)
 
 @app.get("/logs/recent")
 async def get_recent_logs(limit: int = 100):
     """Get recent logs from the database"""
-    db = next(get_db())
+    db = SessionLocal()
     
     try:
         # Get recent error logs (you could also implement a full logging table)
@@ -664,13 +833,15 @@ async def get_recent_logs(limit: int = 100):
 @app.delete("/runs/{run_id}")
 async def delete_run(run_id: str):
     """Delete a specific run and all its associated data"""
-    db = next(get_db())
+    db = SessionLocal()
     
     try:
         # Check if run exists
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
+        if run.status in (RunStatus.PENDING, RunStatus.PROCESSING) or run_id in active_runs:
+            raise HTTPException(status_code=409, detail="Run is currently processing and cannot be deleted")
         
         # Delete associated data rows
         db.query(DataRow).filter(DataRow.run_id == run_id).delete()
@@ -698,14 +869,16 @@ async def delete_run(run_id: str):
         db.close()
 
 @app.post("/runs/{run_id}/reprocess")
-async def reprocess_run(run_id: str, background_tasks: BackgroundTasks):
+async def reprocess_run(run_id: str, background_tasks: BackgroundTasks, provider: Provider = Depends(selected_provider)):
     """Reprocess an existing run - clears old data and reprocesses the file"""
-    db = next(get_db())
+    db = SessionLocal()
     
     try:
         run = db.query(IngestRun).filter(IngestRun.id == run_id).first()
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
+        if run.status in (RunStatus.PENDING, RunStatus.PROCESSING) or run_id in active_runs:
+            raise HTTPException(status_code=409, detail="Run is already processing")
         
         # Check if original file still exists
         file_path = stored_file_for(run_id)
@@ -717,6 +890,11 @@ async def reprocess_run(run_id: str, background_tasks: BackgroundTasks):
         db.query(DataRow).filter(DataRow.run_id == run_id).delete()
         db.query(ErrorLog).filter(ErrorLog.run_id == run_id).delete()
         
+        if run.repair_settings:
+            run.repair_settings.provider = provider
+        else:
+            run.repair_settings = RunRepairSettings(provider=provider)
+
         # Reset run status
         run.status = RunStatus.PENDING
         run.total_rows = 0
@@ -733,7 +911,7 @@ async def reprocess_run(run_id: str, background_tasks: BackgroundTasks):
         logger.info("Reprocessing run", run_id=run_id, file_path=str(file_path))
         
         active_runs[run_id] = {"status": "processing", "progress": 0}
-        background_tasks.add_task(process_csv_file, run_id, str(file_path))
+        background_tasks.add_task(process_csv_file, run_id, str(file_path), provider)
         
         return {"message": "Reprocessing started", "run_id": run_id, "status": "pending"}
         
@@ -750,9 +928,14 @@ async def reprocess_run(run_id: str, background_tasks: BackgroundTasks):
 @app.delete("/runs")
 async def delete_all_runs():
     """Delete all runs and associated data"""
-    db = next(get_db())
+    db = SessionLocal()
     
     try:
+        if active_runs or db.query(IngestRun).filter(
+            IngestRun.status.in_([RunStatus.PENDING, RunStatus.PROCESSING])
+        ).first():
+            raise HTTPException(status_code=409, detail="Wait for active runs to finish before deleting all runs")
+
         run_ids = [run_id for (run_id,) in db.query(IngestRun.id).all()]
         
         # Delete all data rows
@@ -761,6 +944,8 @@ async def delete_all_runs():
         # Delete all error logs
         db.query(ErrorLog).delete()
         
+        db.query(RunRepairSettings).delete()
+
         # Delete all runs
         db.query(IngestRun).delete()
         
@@ -771,6 +956,8 @@ async def delete_all_runs():
         
         return {"message": "All runs deleted successfully"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error("Failed to delete all runs", error=str(e))

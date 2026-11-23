@@ -1,17 +1,29 @@
+import asyncio
 import pandas as pd
 import csv
+import io
+import itertools
+import tempfile
+from pathlib import Path
 import hashlib
 import json
 import re
 import chardet
 from datetime import datetime
+from collections import Counter
 from typing import Dict, List, Any, Tuple, Optional, NamedTuple
 import structlog
 from sqlalchemy.orm import Session
 from .models import DataRow, ErrorLog, IngestRun
 from .ai_fixer import ai_fixer
+from .providers import ProviderError
 
 logger = structlog.get_logger()
+
+# Quoted fields up to the upload limit are legitimate; the default cap is 128 KB.
+csv.field_size_limit(2**31 - 1)
+
+EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xls"}
 
 
 class ValidationError(Exception):
@@ -35,7 +47,8 @@ class DataFix(NamedTuple):
 
 
 class CSVProcessor:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, fixer=ai_fixer):
+        self.fixer = fixer
         self.db = db
         # No required columns by default - accept any schema
         self.required_columns = []
@@ -45,6 +58,48 @@ class CSVProcessor:
         self.email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
     async def process_csv(self, file_path: str, run_id: str) -> Dict[str, int]:
+        """Process an uploaded CSV, or an Excel workbook converted to CSV first."""
+        if Path(file_path).suffix.lower() not in EXCEL_SUFFIXES:
+            return await self._process_delimited(file_path, run_id)
+
+        converted = self.excel_to_csv(file_path)
+        try:
+            # The conversion always writes commas, so a one-column sheet need not
+            # pass delimiter detection.
+            return await self._process_delimited(converted, run_id, known_delimiter=",")
+        finally:
+            Path(converted).unlink(missing_ok=True)
+
+    def excel_to_csv(self, file_path: str) -> str:
+        """Write the first worksheet to a temporary UTF-8 CSV and return its path.
+
+        The upload itself is left untouched so the run can be reprocessed.
+        """
+        try:
+            with pd.ExcelFile(file_path) as workbook:
+                df = workbook.parse(0, header=None, dtype=str, keep_default_na=False)
+                sheets = workbook.sheet_names
+        except Exception as e:
+            raise FileIntegrityError(f"Could not read Excel file: {str(e)}")
+        if not sheets:
+            raise FileIntegrityError("Excel file has no worksheets")
+
+        if len(sheets) > 1:
+            logger.warning("Excel workbook has several sheets; only the first is imported",
+                           sheet=sheets[0], ignored=sheets[1:])
+
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", encoding="utf-8", newline="", delete=False
+        )
+        with handle:
+            df.to_csv(handle, index=False, header=False)
+        return handle.name
+
+    async def _process_delimited(
+        self, file_path: str, run_id: str, known_delimiter: Optional[str] = None
+    ) -> Dict[str, int]:
+        repair_path = None
+        file_fixes = []
         try:
             # File integrity checks
             await self.validate_file_integrity(file_path)
@@ -54,10 +109,10 @@ class CSVProcessor:
 
             # Try to detect delimiter, use AI repair if it fails
             try:
-                delimiter = await self.detect_delimiter(file_path, encoding)
+                delimiter = known_delimiter or await self.detect_delimiter(file_path, encoding)
             except FileIntegrityError as e:
                 # Delimiter detection failed - try AI repair
-                if ai_fixer.enabled:
+                if self.fixer.enabled:
                     logger.info("Attempting AI file repair", run_id=run_id, error=str(e))
 
                     # Read the raw file content
@@ -65,14 +120,17 @@ class CSVProcessor:
                         file_content = f.read()
 
                     # Let AI analyze and repair the file
-                    repaired_content, ai_fixes, delimiter = await ai_fixer.repair_file_content(file_content, str(e))
+                    repaired_content, ai_fixes, delimiter = await self.fixer.repair_file_content(file_content, str(e))
 
                     if ai_fixes:
                         logger.info("AI repaired file", run_id=run_id, fixes=ai_fixes)
 
-                        # Write repaired content back to file
-                        with open(file_path, 'w', encoding=encoding) as f:
-                            f.write(repaired_content)
+                        with tempfile.NamedTemporaryFile(mode="w", encoding=encoding, newline="",
+                                                         suffix=".csv", delete=False) as repaired:
+                            repair_path = Path(repaired.name)
+                            repaired.write(repaired_content)
+                        file_path = str(repair_path)
+                        file_fixes = ai_fixes
 
                         # Store AI fixes in run record
                         run = self.db.query(IngestRun).filter(IngestRun.id == run_id).first()
@@ -84,10 +142,6 @@ class CSVProcessor:
                         raise e
                 else:
                     raise e
-
-            # Validate headers against the raw header line, before pandas renames
-            # any duplicates (it silently turns a second "id" into "id.1").
-            await self.validate_headers(file_path, encoding, delimiter)
 
             # Read with proper parameters
             df, bad_lines = await self.read_file_with_options(file_path, encoding, delimiter)
@@ -111,11 +165,12 @@ class CSVProcessor:
                 where = f"Line {line_number}" if line_number else "A line"
                 await self.log_error(
                     run_id,
-                    # row_index is the file line when known; -1 means unlocated.
-                    line_number - 1 if line_number else -1,
+                    bad_line["row_index"],
                     "MALFORMED_ROW",
-                    f"{where} has {len(bad_line['fields'])} fields, "
-                    f"expected {len(df.columns)}. Row was not imported.",
+                    bad_line.get("reason") or (
+                        f"{where} has {len(bad_line['fields'])} fields, "
+                        f"expected {len(df.columns)}. Row was not imported."
+                    ),
                     {"raw_line": delimiter.join(bad_line["fields"])},
                 )
                 logger.warning(
@@ -127,18 +182,34 @@ class CSVProcessor:
 
             # Hashes already stored by this run, so duplicates inside a single
             # file are detected without relying on uncommitted session state.
-            seen_hashes = set()
+            seen_hashes = {value for (value,) in self.db.query(DataRow.row_hash).filter_by(run_id=run_id)}
 
             # Process rows in batches for large files
             batch_size = 1000
+            counters = ["rows_inserted", "rows_updated", "rows_skipped", "rows_rejected", "rows_flagged", "errors_count"]
+            progress_run = self.db.query(IngestRun).filter(IngestRun.id == run_id).first()
+            if progress_run:
+                progress_run.total_rows = results["total_rows"]
             for batch_start in range(0, len(df), batch_size):
                 batch_end = min(batch_start + batch_size, len(df))
                 batch_df = df.iloc[batch_start:batch_end]
 
-                batch_results = await self.process_batch(batch_df, batch_start, run_id, seen_hashes)
+                batch_results = await self.process_batch(batch_df, batch_start, run_id, seen_hashes, file_fixes)
 
-                for key in ["rows_inserted", "rows_updated", "rows_skipped", "rows_rejected", "rows_flagged", "errors_count"]:
+                for key in counters:
                     results[key] += batch_results[key]
+
+                # Publish running totals so the dashboard can show progress.
+                if progress_run:
+                    for key in counters:
+                        setattr(progress_run, key, results[key])
+                    self.db.commit()
+
+                # Nothing here actually suspends, so without this a large file
+                # blocks the event loop: health checks, progress polls and
+                # WebSocket pings all hang until the run ends. The batch is
+                # committed, so no other request can see half-written state.
+                await asyncio.sleep(0)
 
             self.db.commit()
 
@@ -171,6 +242,9 @@ class CSVProcessor:
                 self.db.commit()
 
             raise
+        finally:
+            if repair_path:
+                repair_path.unlink(missing_ok=True)
 
     async def validate_file_integrity(self, file_path: str):
         """Check for empty files, header-only files, and file size"""
@@ -208,12 +282,13 @@ class CSVProcessor:
         confidence = result.get('confidence') or 0
 
         # Fallback to common encodings if confidence is low
-        if confidence < 0.7:
-            encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+        if confidence < 0.7 or encoding.lower() == 'ascii':
+            encodings_to_try = ['utf-8', 'cp1252', 'latin-1']
             for enc in encodings_to_try:
                 try:
                     with open(file_path, 'r', encoding=enc) as f:
-                        f.read()
+                        while f.read(256 * 1024):
+                            pass
                     encoding = enc
                     break
                 except UnicodeDecodeError:
@@ -225,20 +300,30 @@ class CSVProcessor:
     async def detect_delimiter(self, file_path: str, encoding: str) -> str:
         """Detect CSV delimiter (comma, tab, semicolon, pipe)"""
         with open(file_path, 'r', encoding=encoding) as f:
-            first_line = f.readline()
-
-        delimiters = [',', '\t', ';', '|']
-        delimiter_counts = {}
-
-        for delim in delimiters:
-            delimiter_counts[delim] = first_line.count(delim)
+            delimiter_counts = dict.fromkeys([',', '\t', ';', '|'], 0)
+            quoted = False
+            other_separators = set()
+            for line in f:
+                if not quoted and not line.strip():
+                    continue
+                for char in line:
+                    if char == '"':
+                        quoted = not quoted
+                    elif not quoted and char in delimiter_counts:
+                        delimiter_counts[char] += 1
+                    elif not quoted and char in "~^":
+                        other_separators.add(char)
+                if not quoted:
+                    break
+            # A header with no separator is a valid single-column CSV, including
+            # pasted JSON with one key. Preserve the repair path for other dialects.
+            if not any(delimiter_counts.values()) and other_separators:
+                following = next((line for line in f if line.strip()), "")
+                if any(char in following for char in other_separators):
+                    raise FileIntegrityError("Could not detect a supported delimiter.")
 
         # Choose delimiter with most occurrences
         best_delimiter = max(delimiter_counts, key=delimiter_counts.get)
-
-        # If comma is not found but others are, it's likely wrong delimiter
-        if delimiter_counts[best_delimiter] == 0:
-            raise FileIntegrityError("Could not detect valid delimiter. File may not be properly formatted.")
 
         logger.info("Detected delimiter", delimiter=best_delimiter if best_delimiter != '\t' else 'TAB')
         return best_delimiter
@@ -246,98 +331,94 @@ class CSVProcessor:
     async def read_file_with_options(
         self, file_path: str, encoding: str, delimiter: str
     ) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
-        """Read the file, returning the frame plus any lines the parser rejected.
+        """Read the file, returning the frame plus any lines that were rejected.
 
-        Bad lines are captured instead of discarded so a run can never report
-        success while quietly losing rows.
+        Records are split with the csv module rather than pandas' python engine,
+        which silently drops or shifts rows in several malformed cases: a quote
+        that is never closed, text after a closing quote, and an over-long row
+        early in the file (pandas then treats the first column as an index and
+        moves every value one column left). Every record the csv module sees is
+        either a data row or a rejected line, so totals always reconcile.
         """
         bad_lines: List[Dict[str, Any]] = []
 
-        def collect_bad_line(fields: List[str]):
-            bad_lines.append({"line_number": None, "fields": fields})
-            return None
-
-        read_options = dict(
-            encoding=encoding,
-            delimiter=delimiter,
-            dtype=str,
-            keep_default_na=False,
-            na_values=self.null_variants,
-        )
-
         try:
-            df = pd.read_csv(
-                file_path,
-                engine="python",
-                on_bad_lines=collect_bad_line,
-                **read_options,
-            )
-            if bad_lines:
-                self.attach_line_numbers(bad_lines, file_path, encoding, delimiter, len(df.columns))
-            return df, bad_lines
-
+            records = self.read_records(file_path, encoding, delimiter)
         except UnicodeDecodeError as e:
             raise FileIntegrityError(f"Encoding error: {str(e)}. Please check file encoding.")
-        except pd.errors.EmptyDataError:
+        except csv.Error as e:
+            raise FileIntegrityError(f"Parse error: {str(e)}. File may be corrupted or have inconsistent formatting.")
+
+        if not records:
             raise FileIntegrityError("No data found in file")
-        except pd.errors.ParserError as e:
-            # Try again with more lenient parsing
-            logger.warning("Initial parse failed, trying lenient mode", error=str(e))
-            try:
-                bad_lines.clear()
-                df = pd.read_csv(file_path, engine="python", on_bad_lines="skip", **read_options)
-                logger.warning("Lenient parsing succeeded, rows may have been skipped")
-                return df, bad_lines
-            except Exception:
-                raise FileIntegrityError(f"Parse error: {str(e)}. File may be corrupted or have inconsistent formatting.")
 
-    def attach_line_numbers(
-        self,
-        bad_lines: List[Dict[str, Any]],
-        file_path: str,
-        encoding: str,
-        delimiter: str,
-        expected_fields: int,
-    ):
-        """Fill in the real file line number for each rejected line.
+        _, header, header_unterminated = records[0]
+        if header_unterminated:
+            raise FileIntegrityError("The header row opens a quoted field that is never closed.")
+        columns = [name if name else f"Unnamed: {i}" for i, name in enumerate(header)]
 
-        pandas reports the offending fields but not where they came from, and a
-        row number an operator cannot look up is useless. csv.reader tracks
-        line numbers and applies the same quoting rules, so a second cheap pass
-        recovers them.
+        self.validate_headers(columns)
+        if len(records) == 1:
+            raise FileIntegrityError("File contains only headers, no data rows")
+        rows = []
+        source_indices = []
+        for row_index, (line_number, fields, unterminated) in enumerate(records[1:]):
+            if unterminated:
+                bad_lines.append({
+                    "row_index": row_index,
+                    "line_number": line_number,
+                    "fields": fields,
+                    "reason": (
+                        f"Line {line_number} opens a quoted field that is never closed, "
+                        "so it and everything after it could not be parsed. Row was not imported."
+                    ),
+                })
+            elif len(fields) > len(columns):
+                bad_lines.append({"row_index": row_index, "line_number": line_number, "fields": fields})
+            else:
+                # Short rows are kept and padded, as pandas did.
+                source_indices.append(row_index)
+                rows.append(fields + [None] * (len(columns) - len(fields)))
+
+        df = pd.DataFrame(rows, columns=columns, index=source_indices, dtype=object)
+        return df, bad_lines
+
+    def read_records(self, file_path: str, encoding: str, delimiter: str) -> List[Tuple[int, List[str], bool]]:
+        """Return (start line, fields, unterminated) for every non-blank record."""
+        records = []
+        with open(file_path, "r", encoding=encoding, newline="") as f:
+            reader = csv.reader(f, delimiter=delimiter)
+            start = 1
+            for fields in reader:
+                # pandas skips blank lines; a line of only whitespace is blank too.
+                if fields and not (len(fields) == 1 and not fields[0].strip()):
+                    records.append((start, fields, False))
+                start = reader.line_num + 1
+
+        if records and self.ends_inside_quotes(file_path, encoding, delimiter, records[-1][0]):
+            line_number, fields, _ = records[-1]
+            records[-1] = (line_number, fields, True)
+        return records
+
+    def ends_inside_quotes(self, file_path: str, encoding: str, delimiter: str, start_line: int) -> bool:
+        """True if the record starting at start_line runs off the end of the file.
+
+        The lenient reader returns such a record as if it were complete, with
+        every later line folded into one field, so it must not be imported.
         """
-        located = []
+        with open(file_path, "r", encoding=encoding, newline="") as f:
+            tail = "".join(itertools.islice(f, start_line - 1, None))
         try:
-            with open(file_path, "r", encoding=encoding, newline="") as f:
-                reader = csv.reader(f, delimiter=delimiter)
-                for fields in reader:
-                    if fields and len(fields) != expected_fields:
-                        located.append(reader.line_num)
-        except (OSError, csv.Error) as e:
-            logger.warning("Could not resolve malformed line numbers", error=str(e))
-            return
+            for _ in csv.reader(io.StringIO(tail, newline=""), delimiter=delimiter, strict=True):
+                pass
+        except csv.Error as e:
+            return "end of data" in str(e)
+        return False
 
-        # Only trust the mapping when both passes agree on how many lines were bad.
-        if len(located) != len(bad_lines):
-            logger.warning(
-                "Malformed line count mismatch, reporting without line numbers",
-                pandas_count=len(bad_lines),
-                csv_count=len(located),
-            )
-            return
-
-        for bad_line, line_number in zip(bad_lines, located):
-            bad_line["line_number"] = line_number
-
-    async def validate_headers(self, file_path: str, encoding: str, delimiter: str):
-        """Check for duplicate headers, missing required headers"""
-        with open(file_path, 'r', encoding=encoding) as f:
-            header_line = f.readline()
-
-        headers = [h.strip().strip('"') for h in header_line.rstrip('\r\n').split(delimiter)]
-
+    def validate_headers(self, columns):
+        headers = [name.strip() for name in columns]
         # Check for duplicate headers
-        duplicate_headers = {h for h in headers if headers.count(h) > 1}
+        duplicate_headers = {name for name, count in Counter(headers).items() if count > 1}
         if duplicate_headers:
             raise FileIntegrityError(f"Duplicate headers found: {', '.join(sorted(duplicate_headers))}")
 
@@ -349,7 +430,7 @@ class CSVProcessor:
         logger.info("Header validation passed", headers=headers)
 
     async def process_batch(
-        self, batch_df: pd.DataFrame, batch_start: int, run_id: str, seen_hashes: set
+        self, batch_df: pd.DataFrame, batch_start: int, run_id: str, seen_hashes: set, file_fixes: list
     ) -> Dict[str, int]:
         """Process a batch of rows with transaction safety"""
         results = {
@@ -363,21 +444,15 @@ class CSVProcessor:
 
         # Start transaction for batch
         try:
-            # ``position`` is the offset within this batch; iterrows() yields the
-            # frame's own absolute label, which must not be added to batch_start.
-            for position, (_, row) in enumerate(batch_df.iterrows()):
-                actual_index = batch_start + position
-
+            pending_rows = []
+            for actual_index, row in batch_df.iterrows():
                 try:
-                    # Validate and process row
-                    result, fabricated = await self.process_row(row, actual_index, run_id, seen_hashes)
-
-                    if result == "inserted":
-                        results["rows_inserted"] += 1
-                    elif result == "updated":
-                        results["rows_updated"] += 1
-                    elif result == "skipped":
+                    data_row, fabricated = await self.process_row(row, actual_index, run_id, file_fixes)
+                    if data_row.row_hash in seen_hashes:
                         results["rows_skipped"] += 1
+                    else:
+                        seen_hashes.add(data_row.row_hash)
+                        pending_rows.append(data_row)
 
                     if fabricated:
                         results["rows_flagged"] += 1
@@ -391,6 +466,8 @@ class CSVProcessor:
                         )
                         logger.warning("Row flagged for review", run_id=run_id, row_index=actual_index, fixes=fabricated)
 
+                except ProviderError:
+                    raise
                 except ValidationError as e:
                     # Row validation failed - reject with specific reason
                     results["rows_rejected"] += 1
@@ -405,8 +482,14 @@ class CSVProcessor:
                     await self.log_error(run_id, actual_index, "PROCESSING_ERROR", str(e), row.to_dict())
                     logger.error("Row processing error", run_id=run_id, row_index=actual_index, error=str(e))
 
-            # Commit batch transaction
-            self.db.commit()
+            # Query only the hashes in this batch, within SQLite's parameter limit.
+            for start in range(0, len(pending_rows), 500):
+                chunk = pending_rows[start:start + 500]
+                hashes = [row.row_hash for row in chunk]
+                overlaps = self.db.query(DataRow.row_hash).filter(DataRow.row_hash.in_(hashes)).distinct().count()
+                results["rows_updated"] += overlaps
+                results["rows_inserted"] += len(chunk) - overlaps
+            self.db.add_all(pending_rows)
 
         except Exception as e:
             # Rollback on batch failure
@@ -417,8 +500,8 @@ class CSVProcessor:
         return results
 
     async def process_row(
-        self, row: pd.Series, row_index: int, run_id: str, seen_hashes: set
-    ) -> Tuple[str, List[str]]:
+        self, row: pd.Series, row_index: int, run_id: str, file_fixes: list
+    ) -> Tuple[DataRow, List[str]]:
         """Process individual row with auto-fix, AI-fix, and enhanced validation.
 
         Returns the outcome plus the descriptions of any invented values, so the
@@ -432,10 +515,10 @@ class CSVProcessor:
             validated_data = await self.validate_row_lenient(fixed_data, row_index)
         except ValidationError as e:
             # Auto-fix failed, try AI fix
-            logger.info("Validation failed, checking AI fixer", run_id=run_id, row_index=row_index, error=str(e), ai_enabled=ai_fixer.enabled)
-            if ai_fixer.enabled:
+            logger.info("Validation failed, checking AI fixer", run_id=run_id, row_index=row_index, error=str(e), ai_enabled=self.fixer.enabled)
+            if self.fixer.enabled:
                 logger.info("Attempting AI fix", run_id=run_id, row_index=row_index, error=str(e))
-                ai_fixed_data, ai_fixes = await ai_fixer.fix_row(
+                ai_fixed_data, ai_fixes = await self.fixer.fix_row(
                     fixed_data,
                     str(e),
                     list(row.index)
@@ -457,6 +540,17 @@ class CSVProcessor:
                 logger.warning("AI fixer not enabled", run_id=run_id, row_index=row_index)
                 raise e
 
+        email = validated_data.get("email")
+        if self.fixer.enabled and email and not self.email_pattern.fullmatch(str(email)):
+            suggestion, _ = await self.fixer.fix_row(
+                dict(validated_data), "Correct only the invalid email field.", list(row.index)
+            )
+            candidate = suggestion.get("email")
+            if isinstance(candidate, str) and self.email_pattern.fullmatch(candidate.strip()):
+                validated_data["email"] = candidate.strip()
+                fixes_applied.append(DataFix(f"AI repaired email ({email} -> {candidate.strip()})", fabricated=True))
+
+        fixes_applied.extend(DataFix(fix, fabricated=True) for fix in file_fixes)
         normalized_data = await self.normalize_data(validated_data)
         row_hash = self.generate_row_hash(normalized_data)
         fabricated = [fix.description for fix in fixes_applied if fix.fabricated]
@@ -467,21 +561,6 @@ class CSVProcessor:
         if fabricated:
             normalized_data['_needs_review'] = True
 
-        # Duplicate within this same run
-        if row_hash in seen_hashes:
-            return "skipped", fabricated
-
-        existing_row = self.db.query(DataRow).filter(
-            DataRow.run_id == run_id, DataRow.row_hash == row_hash
-        ).first()
-        if existing_row:
-            return "skipped", fabricated
-
-        # Rows identical to an earlier run are re-recorded against this run so
-        # each run keeps a complete, independently exportable snapshot. The
-        # earlier run keeps its own copy.
-        seen_before = self.db.query(DataRow).filter(DataRow.row_hash == row_hash).first() is not None
-
         data_row = DataRow(
             row_hash=row_hash,
             run_id=run_id,
@@ -490,14 +569,12 @@ class CSVProcessor:
             raw_data=json.dumps(row.to_dict())
         )
 
-        self.db.add(data_row)
-        seen_hashes.add(row_hash)
-
-        return ("updated" if seen_before else "inserted"), fabricated
+        return data_row, fabricated
 
     async def auto_fix_row(self, row: pd.Series, row_index: int, run_id: str) -> Tuple[Dict[str, Any], List[DataFix]]:
         """Attempt to auto-fix common data issues"""
-        row_dict = row.to_dict()
+        row_dict = {key: "" if value is None or value in self.null_variants else value
+                    for key, value in row.items()}
         fixes_applied: List[DataFix] = []
 
         # Fix email issues
@@ -693,8 +770,8 @@ class CSVProcessor:
         # Split name into first and last
         if "name" in normalized and normalized["name"]:
             name_parts = normalized["name"].split()
-            normalized["first_name"] = name_parts[0] if name_parts else ""
-            normalized["last_name"] = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+            normalized.setdefault("first_name", name_parts[0] if name_parts else "")
+            normalized.setdefault("last_name", " ".join(name_parts[1:]))
 
         # Normalize address
         if "address" in normalized and normalized["address"]:

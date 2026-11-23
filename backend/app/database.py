@@ -1,4 +1,5 @@
 from sqlalchemy import create_engine, inspect
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -6,13 +7,12 @@ import os
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./pipecheck.db")
 
-# Use StaticPool for SQLite to handle concurrent access better
-if "sqlite" in DATABASE_URL:
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool
-    )
+url = make_url(DATABASE_URL)
+if url.get_backend_name() == "sqlite":
+    # Only an in-memory database needs one shared connection. File-backed runs
+    # use separate connections so a rollback cannot undo another request.
+    options = {"poolclass": StaticPool} if url.database in (None, "", ":memory:") else {}
+    engine = create_engine(url, connect_args={"check_same_thread": False}, **options)
 else:
     engine = create_engine(DATABASE_URL, pool_size=20, max_overflow=30)
 

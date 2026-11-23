@@ -1,14 +1,61 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, Activity, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, HelpCircle, SkipForward, Volume2, VolumeX, Copy, Flag, X } from 'lucide-react';
+import { Upload, FileText, ArrowUpRight, AlertCircle, CheckCircle, Clock, XCircle, RefreshCw, ZoomIn, ZoomOut, Link, Clipboard, Download, Trash2, HelpCircle, SkipForward, Volume2, VolumeX, Copy, Flag, X, BookOpen, Braces, PlayCircle } from 'lucide-react';
 import axios from 'axios';
 import { Toaster, toast } from 'sonner';
 import { Progress } from './components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './components/ui/dialog';
 import Console from './Console';
+import ProviderSettings, { providerNames } from './components/ProviderSettings';
 import CSVPreview from './components/CSVPreview';
 import soundManager from './lib/sounds';
-import { API_URL, WS_URL, apiUrl, wsUrl } from './lib/api';
+import { API_URL, apiUrl, wsUrl } from './lib/api';
+import { jsonToCsv } from './lib/csv';
 import './App.css';
+
+const ACCEPTED_EXTENSIONS = new Set(['csv', 'xlsx', 'xls', 'xlsm']);
+const MAX_PREVIEW_SIZE = 2 * 1024 * 1024;
+const MAX_CACHED_PREVIEW_SIZE = 500 * 1024;
+const MAX_URL_UPLOAD_SIZE = 25 * 1024 * 1024;
+
+const removeStored = (key) => {
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.warn(`Unable to clear browser storage value for ${key}:`, error);
+  }
+};
+
+const readStoredJson = (key, fallback) => {
+  try {
+    const value = localStorage.getItem(key);
+    return value ? JSON.parse(value) : fallback;
+  } catch (error) {
+    console.warn(`Ignoring invalid browser storage value for ${key}:`, error);
+    removeStored(key);
+    return fallback;
+  }
+};
+
+const writeStoredJson = (key, value) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    console.warn(`Unable to save browser storage value for ${key}:`, error);
+    return false;
+  }
+};
+
+const fileExtension = (filename = '') => {
+  const dot = filename.lastIndexOf('.');
+  return dot > 0 ? filename.slice(dot + 1).toLowerCase() : '';
+};
+
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'partial_success']);
+const POLL_INTERVAL_MS = 500;
+const MAX_POLL_FAILURES = 20;
+const URL_FETCH_TIMEOUT_MS = 60 * 1000;
+const sampleUrl = (format) => `${process.env.PUBLIC_URL || ''}/samples/pipecheck-demo.${format}`;
 
 // Elapsed Timer Component
 const ElapsedTimer = ({ startTime }) => {
@@ -36,9 +83,14 @@ function App() {
   const [stats, setStats] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [selectedRun, setSelectedRun] = useState(null);
-  const [errors, setErrors] = useState([]);
+  const [reviewRequest, setReviewRequest] = useState({ runId: null, revision: 0 });
+  const [provider, setProvider] = useState(() => readStoredJson('pipecheckRepairProvider', null));
+  const providerHeaders = provider ? { 'X-PipeCheck-Provider': provider } : {};
   const [dragActive, setDragActive] = useState(false);
-  const [uiScale, setUiScale] = useState(1); // 0.75, 0.875, 1, 1.125, 1.25, 1.375
+  const [uiScale, setUiScale] = useState(() => {
+    const storedScale = Number(readStoredJson('pipecheckUiScale', 0.875));
+    return storedScale >= 0.75 && storedScale <= 1.375 ? storedScale : 0.875;
+  });
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingProgress, setProcessingProgress] = useState({});
   const [currentUploadId, setCurrentUploadId] = useState(null);
@@ -47,12 +99,9 @@ function App() {
   const [showStatusMeaning, setShowStatusMeaning] = useState(false);
   const [uploadStartTime, setUploadStartTime] = useState(null);
   const [processingTime, setProcessingTime] = useState(null);
-  const [uploadedFileContent, setUploadedFileContent] = useState(null);
-  const [uploadedFileName, setUploadedFileName] = useState(null);
   const [filePreviewCache, setFilePreviewCache] = useState(() => {
-    // Load cached previews from localStorage
-    const cached = localStorage.getItem('csvFilePreviewCache');
-    return cached ? JSON.parse(cached) : {};
+    const cached = readStoredJson('csvFilePreviewCache', {});
+    return cached && typeof cached === 'object' && !Array.isArray(cached) ? cached : {};
   });
   const [soundEnabled, setSoundEnabled] = useState(soundManager.enabled);
   const [duplicateFileDialog, setDuplicateFileDialog] = useState({ open: false, file: null, existingRun: null });
@@ -60,6 +109,15 @@ function App() {
   const [uploadMethod, setUploadMethod] = useState('file'); // file, paste
   const [csvText, setCsvText] = useState('');
   const [csvUrl, setCsvUrl] = useState('');
+  const [pasteFormat, setPasteFormat] = useState('csv');
+  const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [tutorialFormat, setTutorialFormat] = useState('csv');
+  const [tutorialLoading, setTutorialLoading] = useState(false);
+  const pollingRuns = useRef(new Map());
+  const pendingReplacements = useRef(new Map());
+  const handleFileUploadRef = useRef(null);
+  const addLogRef = useRef(null);
+  const pollProcessingProgressRef = useRef(null);
 
   useEffect(() => {
     fetchRuns();
@@ -71,64 +129,73 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // WebSocket connection for real-time logs
+  // WebSocket connection for real-time logs. Reconnect after API restarts or
+  // brief network interruptions instead of leaving the console permanently stale.
   useEffect(() => {
-    // Connect to global WebSocket
-    ws.current = new WebSocket(wsUrl('/ws'));
-    
-    ws.current.onopen = () => {
-      console.log('Connected to WebSocket');
-      addLog('info', 'Connected to real-time console');
-    };
-    
-    ws.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      
-      if (data.type === 'log') {
-        addLog(data.level, data.message, data.timestamp, data.run_id);
-      } else if (data.type === 'ping') {
-        // Ignore ping messages
+    let disposed = false;
+    let retryTimer = null;
+    let attempts = 0;
+
+    const scheduleReconnect = () => {
+      if (disposed) return;
+      attempts += 1;
+      const delay = Math.min(1000 * (2 ** (attempts - 1)), 15000);
+      if (attempts === 1) {
+        addLogRef.current?.('warn', 'Real-time console disconnected; reconnecting…');
       }
+      retryTimer = window.setTimeout(connect, delay);
     };
-    
-    ws.current.onclose = () => {
-      console.log('Disconnected from WebSocket');
-      addLog('warn', 'Disconnected from real-time console');
+
+    const connect = () => {
+      let socket;
+      try {
+        socket = new WebSocket(wsUrl('/ws'));
+      } catch (error) {
+        console.warn('Unable to open WebSocket:', error);
+        scheduleReconnect();
+        return;
+      }
+      ws.current = socket;
+
+      socket.onopen = () => {
+        const reconnected = attempts > 0;
+        attempts = 0;
+        addLogRef.current?.('info', reconnected ? 'Real-time console reconnected' : 'Connected to real-time console');
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'log') {
+            addLogRef.current?.(data.level, data.message, data.timestamp, data.run_id);
+          }
+        } catch (error) {
+          console.warn('Ignored malformed WebSocket message:', error);
+        }
+      };
+
+      socket.onclose = scheduleReconnect;
+
+      socket.onerror = () => socket.close();
     };
-    
-    ws.current.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      addLog('error', 'WebSocket connection error');
-    };
-    
+
+    retryTimer = window.setTimeout(connect, 0);
+
     return () => {
-      if (ws.current) {
-        ws.current.close();
-      }
+      disposed = true;
+      window.clearTimeout(retryTimer);
+      ws.current?.close();
     };
   }, []);
 
   // Load logs and console state from localStorage on mount and fetch recent logs from backend
   useEffect(() => {
     // First load from localStorage
-    const savedLogs = localStorage.getItem('csvConsoleLogs');
-    const savedConsoleState = localStorage.getItem('csvConsoleExpanded');
-    
-    if (savedLogs) {
-      try {
-        setConsoleLogs(JSON.parse(savedLogs));
-      } catch (e) {
-        console.error('Failed to parse saved logs:', e);
-      }
-    }
-    
-    if (savedConsoleState) {
-      try {
-        setConsoleExpanded(JSON.parse(savedConsoleState));
-      } catch (e) {
-        console.error('Failed to parse console state:', e);
-      }
-    }
+    const savedLogs = readStoredJson('csvConsoleLogs', []);
+    const savedConsoleState = readStoredJson('csvConsoleExpanded', false);
+
+    if (Array.isArray(savedLogs)) setConsoleLogs(savedLogs.slice(-250));
+    setConsoleExpanded(savedConsoleState === true);
     
     // Then fetch recent logs from backend
     const fetchRecentLogs = async () => {
@@ -160,52 +227,32 @@ function App() {
   // Save logs to localStorage whenever they change
   useEffect(() => {
     if (consoleLogs.length > 0) {
-      localStorage.setItem('csvConsoleLogs', JSON.stringify(consoleLogs));
+      writeStoredJson('csvConsoleLogs', consoleLogs.slice(-250));
+    } else {
+      removeStored('csvConsoleLogs');
     }
   }, [consoleLogs]);
 
   // Save console state to localStorage whenever it changes
   useEffect(() => {
-    localStorage.setItem('csvConsoleExpanded', JSON.stringify(consoleExpanded));
+    writeStoredJson('csvConsoleExpanded', consoleExpanded);
   }, [consoleExpanded]);
+
+  useEffect(() => {
+    writeStoredJson('pipecheckUiScale', uiScale);
+  }, [uiScale]);
 
   // Save file preview cache to localStorage
   useEffect(() => {
-    if (Object.keys(filePreviewCache).length > 0) {
-      // Keep only last 10 previews to avoid localStorage bloat
-      const entries = Object.entries(filePreviewCache);
-      const trimmed = entries.slice(-10);
-      localStorage.setItem('csvFilePreviewCache', JSON.stringify(Object.fromEntries(trimmed)));
+    const cacheable = Object.entries(filePreviewCache)
+      .filter(([, preview]) => preview?.content?.length <= MAX_CACHED_PREVIEW_SIZE)
+      .slice(-3);
+    if (cacheable.length > 0) {
+      writeStoredJson('csvFilePreviewCache', Object.fromEntries(cacheable));
+    } else {
+      removeStored('csvFilePreviewCache');
     }
   }, [filePreviewCache]);
-
-  // Load preview when selecting a run
-  useEffect(() => {
-    if (selectedRun && filePreviewCache[selectedRun.run_id]) {
-      const cached = filePreviewCache[selectedRun.run_id];
-      setUploadedFileContent(cached.content);
-      setUploadedFileName(cached.filename);
-    }
-  }, [selectedRun?.run_id, filePreviewCache]);
-
-  // Connect to run-specific WebSocket when uploading
-  useEffect(() => {
-    if (currentUploadId) {
-      const runWs = new WebSocket(`${WS_URL}/ws/${currentUploadId}`);
-      
-      runWs.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        
-        if (data.type === 'log') {
-          addLog(data.level, data.message, data.timestamp, data.run_id);
-        }
-      };
-      
-      return () => {
-        runWs.close();
-      };
-    }
-  }, [currentUploadId]);
 
   const addLog = (level, message, timestamp = null, runId = null) => {
     const newLog = {
@@ -230,17 +277,23 @@ function App() {
       return updated.slice(-1000);
     });
   };
+  addLogRef.current = addLog;
 
   // Poll for progress of processing runs
   useEffect(() => {
-    const processingRuns = runs.filter(run => run.status === 'processing');
+    const processingRuns = runs.filter(run => run.status === 'processing' || run.status === 'pending');
     
     processingRuns.forEach(run => {
-      if (!processingProgress[run.run_id]) {
-        pollProcessingProgress(run.run_id);
+      if (!pollingRuns.current.has(run.run_id)) {
+        pollProcessingProgressRef.current?.(run.run_id);
       }
     });
   }, [runs]);
+
+  useEffect(() => () => {
+    pollingRuns.current.forEach(interval => window.clearInterval(interval));
+    pollingRuns.current.clear();
+  }, []);
 
   // Handle paste events for files
   useEffect(() => {
@@ -252,7 +305,7 @@ function App() {
             if (items[i].kind === 'file' && items[i].type === 'text/csv') {
               const file = items[i].getAsFile();
               if (file) {
-                handleFileUpload(file);
+                handleFileUploadRef.current?.(file);
                 e.preventDefault();
               }
             }
@@ -263,7 +316,7 @@ function App() {
 
     document.addEventListener('paste', handlePaste);
     return () => document.removeEventListener('paste', handlePaste);
-  }, [uploadMethod, uiScale]);
+  }, [uploadMethod]);
 
   const fetchRuns = async () => {
     try {
@@ -277,12 +330,14 @@ function App() {
         // Keep current selection, but update with fresh data if it exists
         if (prev) {
           const updated = response.data.find(r => r.run_id === prev.run_id);
-          return updated || prev;
+          return updated || response.data[0] || null;
         }
         return prev;
       });
+      return response.data;
     } catch (error) {
       console.error('Error fetching runs:', error);
+      return null;
     }
   };
 
@@ -295,29 +350,8 @@ function App() {
     }
   };
 
-  const fetchErrors = async (runId) => {
-    try {
-      const response = await axios.get(`${API_URL}/runs/${runId}/errors`);
-      setErrors(response.data);
-    } catch (error) {
-      console.error('Error fetching errors:', error);
-    }
-  };
-
-  const [processedData, setProcessedData] = useState(null);
-
-  const fetchProcessedData = async (runId) => {
-    try {
-      const response = await axios.get(`${API_URL}/runs/${runId}/data`);
-      setProcessedData(response.data);
-    } catch (error) {
-      console.error('Error fetching processed data:', error);
-      setProcessedData(null);
-    }
-  };
-
-  const handleFileUpload = async (file, forceUpload = false, versionSuffix = null) => {
-    if (!file || !(file.name.endsWith('.csv') || file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.name.endsWith('.xlsm'))) {
+  const handleFileUpload = async (file, forceUpload = false, versionSuffix = null, replacingRunId = null) => {
+    if (!file || !ACCEPTED_EXTENSIONS.has(fileExtension(file.name))) {
       toast.error('Please upload a CSV or Excel file');
       return;
     }
@@ -341,17 +375,14 @@ function App() {
       uploadFile = new File([file], newName, { type: file.type });
     }
 
-    // Skip preview for large files (> 10MB) to prevent browser crash
-    const MAX_PREVIEW_SIZE = 10 * 1024 * 1024; // 10MB
+    const previewable = fileExtension(uploadFile.name) === 'csv' && file.size <= MAX_PREVIEW_SIZE;
     let fileContent = null;
     
-    if (file.size <= MAX_PREVIEW_SIZE) {
+    if (previewable) {
       // Read file content for preview
       const reader = new FileReader();
       reader.onload = (e) => {
         fileContent = e.target.result;
-        setUploadedFileContent(fileContent);
-        setUploadedFileName(uploadFile.name);
       };
       reader.onerror = (e) => {
         console.error('FileReader error:', e);
@@ -362,12 +393,11 @@ function App() {
         reader.onloadend = resolve;
         reader.readAsText(uploadFile);
       });
-    } else {
-      // Large file - show placeholder instead of full preview
+    } else if (fileExtension(uploadFile.name) === 'csv') {
       const sizeMB = (file.size / 1024 / 1024).toFixed(1);
-      setUploadedFileContent(`# Large File Preview Disabled\n# File: ${uploadFile.name}\n# Size: ${sizeMB} MB\n# Preview is disabled for files larger than 10MB to prevent browser crashes.\n# The file will still be processed normally.`);
-      setUploadedFileName(uploadFile.name);
-      addLog('info', `Large file detected (${sizeMB} MB), preview disabled`);
+      addLog('info', `Large file detected (${sizeMB} MB); browser preview skipped`);
+    } else {
+      addLog('info', `Excel preview is shown after server processing completes`);
     }
 
     soundManager.upload();
@@ -386,27 +416,32 @@ function App() {
       ? apiUrl('/upload?force=true') 
       : apiUrl('/upload');
 
+    let uploadResult = null;
     try {
       const response = await axios.post(uploadUrl, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
+          ...providerHeaders,
         },
         onUploadProgress: (progressEvent) => {
+          if (!progressEvent.total) return;
           const percentCompleted = Math.round(
             (progressEvent.loaded * 100) / progressEvent.total
           );
           setUploadProgress(percentCompleted);
         },
       });
+      uploadResult = response.data;
+      if (replacingRunId) pendingReplacements.current.set(uploadResult.run_id, replacingRunId);
       
       addLog('info', `File uploaded, run ID: ${response.data.run_id}`);
       setCurrentUploadId(response.data.run_id);
-      setProcessingProgress({ [response.data.run_id]: 0 });
+      setProcessingProgress(prev => ({ ...prev, [response.data.run_id]: 0 }));
       
       // Cache the file preview for this run
       if (fileContent) {
         setFilePreviewCache(prev => ({
-          ...prev,
+          ...Object.fromEntries(Object.entries(prev).filter(([id]) => id !== response.data.run_id).slice(-2)),
           [response.data.run_id]: {
             content: fileContent,
             filename: uploadFile.name
@@ -414,8 +449,10 @@ function App() {
         }));
       }
       
-      await fetchRuns();
+      const latestRuns = await fetchRuns();
       await fetchStats();
+      const uploadedRun = latestRuns?.find(run => run.run_id === response.data.run_id);
+      if (uploadedRun) setSelectedRun(uploadedRun);
       
       if (response.data.status === 'skipped') {
         toast.info('File already processed. Skipping duplicate.');
@@ -445,15 +482,14 @@ function App() {
     } finally {
       setUploading(false);
     }
+    return uploadResult;
   };
+  handleFileUploadRef.current = handleFileUpload;
 
   const handleMultiFileUpload = async (files) => {
     const fileArray = Array.from(files);
     const validFiles = fileArray.filter(file => 
-      file.name.endsWith('.csv') || 
-      file.name.endsWith('.xlsx') || 
-      file.name.endsWith('.xls') || 
-      file.name.endsWith('.xlsm')
+      ACCEPTED_EXTENSIONS.has(fileExtension(file.name))
     );
 
     if (validFiles.length === 0) {
@@ -469,21 +505,27 @@ function App() {
     addLog('info', `Starting batch upload: ${validFiles.length} file(s)`);
 
     // Process files sequentially to avoid overwhelming the server
+    let uploaded = 0;
     for (let i = 0; i < validFiles.length; i++) {
       const file = validFiles[i];
       addLog('info', `Processing file ${i + 1}/${validFiles.length}: ${file.name}`);
       
       try {
-        await handleFileUpload(file);
+        if (await handleFileUpload(file)) uploaded += 1;
       } catch (error) {
         addLog('error', `Failed to upload ${file.name}: ${error.message}`);
       }
     }
 
     if (validFiles.length > 1) {
-      soundManager.uploadComplete();
-      toast.success(`Batch upload complete: ${validFiles.length} files processed`);
-      addLog('info', `Batch upload complete: ${validFiles.length} files processed`);
+      const summary = `Batch upload complete: ${uploaded} of ${validFiles.length} files uploaded`;
+      if (uploaded === validFiles.length) {
+        soundManager.uploadComplete();
+        toast.success(summary);
+      } else {
+        toast.warning(summary);
+      }
+      addLog(uploaded === validFiles.length ? 'info' : 'warn', summary);
     }
   };
 
@@ -513,23 +555,46 @@ function App() {
       return;
     }
 
-    // Set the preview data
-    setUploadedFileContent(csvText);
-    setUploadedFileName('pasted-data.csv');
-
-    setUploading(true);
     try {
-      const blob = new Blob([csvText], { type: 'text/csv' });
-      const file = new File([blob], 'pasted-data.csv', { type: 'text/csv' });
-      await handleFileUpload(file);
-      setCsvText('');
+      const uploadContent = pasteFormat === 'json' ? jsonToCsv(JSON.parse(csvText)) : csvText;
+      const filename = pasteFormat === 'json' ? 'pasted-json-data.csv' : 'pasted-data.csv';
+      if (pasteFormat === 'json') {
+        addLog('info', 'Converted pasted JSON records to CSV for processing');
+      }
+      const blob = new Blob([uploadContent], { type: 'text/csv' });
+      const file = new File([blob], filename, { type: 'text/csv' });
+      if (await handleFileUpload(file)) setCsvText('');
     } catch (error) {
       console.error('Paste upload error:', error);
-      toast.error('Upload failed: ' + (error.response?.data?.detail || error.message));
-      setUploadedFileContent(null);
-      setUploadedFileName(null);
+      toast.error(`${pasteFormat.toUpperCase()} upload failed: ${error.response?.data?.detail || error.message}`);
+    }
+  };
+
+  const loadTutorialSample = async (runImmediately = false) => {
+    setTutorialLoading(true);
+    try {
+      const response = await fetch(sampleUrl(tutorialFormat));
+      if (!response.ok) throw new Error('Sample data is unavailable');
+      const source = await response.text();
+      const csv = tutorialFormat === 'json' ? jsonToCsv(JSON.parse(source)) : source;
+
+      if (runImmediately) {
+        const file = new File([csv], `pipecheck-demo-${tutorialFormat}.csv`, { type: 'text/csv' });
+        setTutorialOpen(false);
+        addLog('info', `Starting guided ${tutorialFormat.toUpperCase()} demo`);
+        await handleFileUpload(file);
+      } else {
+        setUploadMethod('paste');
+        setPasteFormat(tutorialFormat);
+        setCsvText(source);
+        setTutorialOpen(false);
+        window.requestAnimationFrame(() => document.getElementById('paste-data-input')?.focus());
+        toast.success(`${tutorialFormat.toUpperCase()} sample loaded. Review it, then click Process ${tutorialFormat.toUpperCase()} data.`);
+      }
+    } catch (error) {
+      toast.error(`Could not load sample: ${error.message}`);
     } finally {
-      setUploading(false);
+      setTutorialLoading(false);
     }
   };
 
@@ -539,32 +604,63 @@ function App() {
       return;
     }
 
+    let url;
+    try {
+      url = new URL(csvUrl.trim());
+    } catch (error) {
+      toast.error('Please enter a valid URL');
+      return;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      toast.error('Only http and https URLs are supported');
+      return;
+    }
+
     setUploading(true);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), URL_FETCH_TIMEOUT_MS);
     try {
       // First fetch the CSV from URL
-      const response = await fetch(csvUrl);
+      const response = await fetch(url, { signal: controller.signal });
       if (!response.ok) {
-        throw new Error(`Failed to fetch: ${response.statusText}`);
+        throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`.trim());
       }
       
-      const csvContent = await response.text();
-      const filename = csvUrl.split('/').pop() || 'url-data.csv';
+      const declaredSize = Number(response.headers.get('content-length') || 0);
+      if (declaredSize > MAX_URL_UPLOAD_SIZE) throw new Error('Remote file exceeds the 25 MB URL-import limit');
+      const blob = await response.blob();
+      if (blob.size > MAX_URL_UPLOAD_SIZE) throw new Error('Remote file exceeds the 25 MB URL-import limit');
+      if (blob.size === 0) throw new Error('Remote file is empty');
+
+      let filename = url.pathname.split('/').pop() || '';
+      try {
+        filename = decodeURIComponent(filename);
+      } catch (error) {
+        // Keep the raw segment when it contains malformed percent-escapes.
+      }
+      if (!ACCEPTED_EXTENSIONS.has(fileExtension(filename))) {
+        // Export endpoints (e.g. ?format=csv) often have no extension. Accept
+        // them when the server says the body is text, otherwise refuse.
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        if (!/csv|text\/plain|octet-stream/.test(contentType) && contentType !== '') {
+          throw new Error('URL must point to a CSV or Excel file');
+        }
+        filename = `${filename.replace(/[^\w.-]+/g, '_') || 'url-data'}.csv`;
+      }
       
-      // Set the preview data
-      setUploadedFileContent(csvContent);
-      setUploadedFileName(filename);
+      const file = new File([blob], filename, { type: blob.type || 'text/csv' });
       
-      const blob = new Blob([csvContent], { type: 'text/csv' });
-      const file = new File([blob], filename, { type: 'text/csv' });
-      
-      await handleFileUpload(file);
-      setCsvUrl('');
+      if (await handleFileUpload(file)) setCsvUrl('');
     } catch (error) {
       console.error('URL upload error:', error);
-      toast.error('Upload failed: ' + error.message);
-      setUploadedFileContent(null);
-      setUploadedFileName(null);
+      const message = error.name === 'AbortError'
+        ? 'The remote server did not respond in time'
+        : error.message === 'Failed to fetch'
+          ? 'The remote server refused the request (it may not allow cross-origin downloads)'
+          : error.message;
+      toast.error('Upload failed: ' + message);
     } finally {
+      window.clearTimeout(timeout);
       setUploading(false);
     }
   };
@@ -646,7 +742,6 @@ function App() {
             // Clear selected run if it was deleted
             if (selectedRun && selectedRun.run_id === runId) {
               setSelectedRun(null);
-              setErrors([]);
             }
             
             toast.success('Run deleted successfully');
@@ -667,10 +762,10 @@ function App() {
     soundManager.click();
     try {
       addLog('info', `Reprocessing run ${runId}...`);
-      await axios.post(`${API_URL}/runs/${runId}/reprocess`);
+      await axios.post(`${API_URL}/runs/${runId}/reprocess`, null, { headers: providerHeaders });
       
       setCurrentUploadId(runId);
-      setProcessingProgress({ [runId]: 0 });
+      setProcessingProgress(prev => ({ ...prev, [runId]: 0 }));
       
       await fetchRuns();
       toast.success('Reprocessing started');
@@ -693,7 +788,7 @@ function App() {
   const handleClearPersistedLogs = () => {
     soundManager.delete();
     setConsoleLogs([]);
-    localStorage.removeItem('csvConsoleLogs');
+    removeStored('csvConsoleLogs');
     toast.success('All logs cleared from storage');
   };
 
@@ -719,7 +814,6 @@ function App() {
             // Clear all data
             setRuns([]);
             setSelectedRun(null);
-            setErrors([]);
             await fetchStats();
             
             toast.success('All runs deleted successfully');
@@ -740,19 +834,8 @@ function App() {
   const handleDuplicateOverwrite = async () => {
     const { file, existingRun } = duplicateFileDialog;
     setDuplicateFileDialog({ open: false, file: null, existingRun: null });
-    
-    // Delete the existing run first
-    try {
-      await axios.delete(`${API_URL}/runs/${existingRun.run_id}`);
-      await fetchRuns();
-      toast.success('Previous run deleted');
-    } catch (error) {
-      toast.error('Failed to delete previous run');
-      return;
-    }
-    
-    // Now upload the file
-    await handleFileUpload(file, true);
+
+    await handleFileUpload(file, true, null, existingRun.run_id);
   };
 
   const handleDuplicateNewVersion = async () => {
@@ -760,11 +843,16 @@ function App() {
     setDuplicateFileDialog({ open: false, file: null, existingRun: null });
     
     // Find the next version number
-    const baseName = file.name.split('.')[0];
+    const extension = fileExtension(file.name);
+    const baseName = file.name.slice(0, -(extension.length + 1));
     const existingVersions = runs.filter(run => 
-      run.filename.startsWith(baseName) && run.filename.includes('_v')
+      run.filename === file.name || new RegExp(`^${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_v\\d+\\.${extension}$`, 'i').test(run.filename)
     );
-    const nextVersion = existingVersions.length + 2; // +2 because original is v1
+    const versionNumbers = existingVersions.map(run => {
+      const match = run.filename.match(/_v(\d+)\.[^.]+$/i);
+      return match ? Number(match[1]) : 1;
+    });
+    const nextVersion = Math.max(1, ...versionNumbers) + 1;
     
     await handleFileUpload(file, true, nextVersion);
   };
@@ -774,14 +862,43 @@ function App() {
   };
 
   const pollProcessingProgress = async (runId, startTime = null) => {
+    if (pollingRuns.current.has(runId)) return;
+
+    let inFlight = false;
+    let finished = false;
+    let failures = 0;
+    const stop = () => {
+      finished = true;
+      clearInterval(pollInterval);
+      pollingRuns.current.delete(runId);
+    };
+
     const pollInterval = setInterval(async () => {
+      if (inFlight || finished) return;
+      inFlight = true;
       try {
-        const response = await axios.get(`${API_URL}/runs/${runId}`);
+        const response = await axios.get(`${API_URL}/runs/${runId}`, { timeout: 10000 });
+        failures = 0;
+        if (finished) return;
         const run = response.data;
         
-        if (run.status === 'completed' || run.status === 'failed' || run.status === 'partial_success') {
-          clearInterval(pollInterval);
-          
+        if (TERMINAL_STATUSES.has(run.status)) {
+          stop();
+          const previousRunId = pendingReplacements.current.get(runId);
+          if (previousRunId) {
+            pendingReplacements.current.delete(runId);
+            if (run.status !== 'failed' && run.rows_inserted + run.rows_updated > 0) {
+              try {
+                await axios.delete(apiUrl(`/runs/${previousRunId}`));
+                toast.success('Previous run replaced');
+              } catch {
+                toast.warning('Replacement completed. The previous run is still available.');
+              }
+            } else {
+              toast.warning('Replacement produced no usable result. The previous run is still available.');
+            }
+          }
+
           const elapsed = startTime ? Date.now() - startTime : null;
           if (elapsed) {
             setProcessingTime(elapsed);
@@ -823,27 +940,25 @@ function App() {
         }
       } catch (error) {
         console.error('Error polling progress:', error);
-        clearInterval(pollInterval);
+        failures += 1;
+        if (error.response?.status === 404) {
+          stop();
+          setProcessingProgress(prev => {
+            const newProgress = { ...prev };
+            delete newProgress[runId];
+            return newProgress;
+          });
+        } else if (failures >= MAX_POLL_FAILURES) {
+          stop();
+          addLog('warn', 'Progress updates paused; the dashboard will retry automatically');
+        }
+      } finally {
+        inFlight = false;
       }
-    }, 500); // Poll every 500ms for faster updates
+    }, POLL_INTERVAL_MS);
+    pollingRuns.current.set(runId, pollInterval);
   };
-
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'pending':
-        return <Clock className="w-4 h-4" />;
-      case 'processing':
-        return <RefreshCw className="w-4 h-4 animate-spin" />;
-      case 'completed':
-        return <CheckCircle className="w-4 h-4" />;
-      case 'failed':
-        return <XCircle className="w-4 h-4" />;
-      case 'skipped':
-        return <AlertCircle className="w-4 h-4" />;
-      default:
-        return <Clock className="w-4 h-4" />;
-    }
-  };
+  pollProcessingProgressRef.current = pollProcessingProgress;
 
   const formatDate = (dateString) => {
     if (!dateString) return '-';
@@ -854,15 +969,11 @@ function App() {
     const scale = uiScale;
     
     return {
-      container: scale <= 0.875 ? 'text-sm' : scale >= 1.125 ? 'text-lg' : 'text-base',
-      header: `text-${Math.round(3 * scale)}xl`, // Scales from 2xl to 4xl
-      card: scale <= 0.875 ? 'p-4' : scale >= 1.125 ? 'p-8' : 'p-6', // Fixed padding classes
-      statCard: scale <= 0.875 ? 'p-4' : scale >= 1.125 ? 'p-8' : 'p-6', // Fixed padding classes
-      statValue: `text-${Math.round(2 * scale)}xl`, // Scales from xl to 3xl
+      container: scale <= 0.875 ? 'text-sm' : scale >= 1.125 ? 'text-base' : 'text-sm',
+      card: scale <= 0.875 ? 'p-4' : scale >= 1.125 ? 'p-6' : 'p-5',
       table: scale <= 0.875 ? 'text-xs' : scale >= 1.125 ? 'text-base' : 'text-sm',
-      button: `px-${Math.round(2.5 * scale)} py-${Math.round(0.5 * scale)} text-xs`,
-      icon: `w-${Math.round(4 * scale)} h-${Math.round(4 * scale)}`, // Scales from 3 to 6
-      title: `text-${Math.round(1.25 * scale)}xl` // Scales from lg to 2xl
+      icon: scale <= 0.875 ? 'w-4 h-4' : scale >= 1.125 ? 'w-6 h-6' : 'w-5 h-5',
+      title: scale <= 0.875 ? 'text-base' : scale >= 1.125 ? 'text-xl' : 'text-lg'
     };
   };
 
@@ -884,16 +995,93 @@ function App() {
   };
 
   return (
-    <div className={`relative min-h-screen bg-[#f6f7fb] text-slate-800 ${sizeClasses.container}`}>
-      {/* Decorative top gradient */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-96 bg-gradient-to-b from-indigo-100/70 via-indigo-50/30 to-transparent" />
-
+    <div className={`workspace ${sizeClasses.container}`} id="top" style={{ '--desk-scale': uiScale / 0.875 }}>
+      <a className="skip-link" href="#import">Skip to import</a>
       <Toaster 
         position="top-right"
         expand={false}
         richColors
         closeButton
       />
+
+      <Dialog open={tutorialOpen} onOpenChange={setTutorialOpen}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto p-5 sm:p-6">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <BookOpen className="h-5 w-5 text-indigo-600" />
+              Guided PipeCheck demo
+            </DialogTitle>
+            <DialogDescription>
+              Start with four realistic records. The sample includes clean values, deterministic cleanup, and repairs that must be reviewed.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            {[
+              ['1', 'Choose a source', 'Use CSV directly or see JSON converted before ingest.'],
+              ['2', 'Process the sample', 'PipeCheck validates, normalizes, deduplicates, and flags guesses.'],
+              ['3', 'Inspect the result', 'Compare counters, issues, final data, and exports.'],
+            ].map(([step, title, description]) => (
+              <div key={step} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <span className="chip mb-2 bg-indigo-100 text-indigo-700">Step {step}</span>
+                <p className="text-sm font-semibold text-slate-800">{title}</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">{description}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="segmented w-full">
+            <button
+              onClick={() => setTutorialFormat('csv')}
+              className={`segmented-item flex-1 justify-center ${tutorialFormat === 'csv' ? 'segmented-item-active' : ''}`}
+            >
+              <FileText className="h-4 w-4" /> CSV sample
+            </button>
+            <button
+              onClick={() => setTutorialFormat('json')}
+              className={`segmented-item flex-1 justify-center ${tutorialFormat === 'json' ? 'segmented-item-active' : ''}`}
+            >
+              <Braces className="h-4 w-4" /> JSON sample
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4">
+            <p className="text-sm font-semibold text-indigo-950">
+              {tutorialFormat === 'csv' ? 'CSV goes straight to the pipeline' : 'JSON is converted to CSV in your browser'}
+            </p>
+            <p className="mt-1 text-sm text-indigo-800/75">
+              {tutorialFormat === 'csv'
+                ? 'The quoted city value also demonstrates correct handling of commas inside fields.'
+                : 'PipeCheck still processes CSV/Excel on the backend; the conversion is explicit and the original JSON remains downloadable.'}
+            </p>
+          </div>
+
+          <DialogFooter className="gap-2 sm:space-x-0">
+            <a
+              href={sampleUrl(tutorialFormat)}
+              download
+              className="btn-outline px-4 py-2 text-sm"
+            >
+              <Download className="h-4 w-4" /> Download sample
+            </a>
+            <button
+              onClick={() => loadTutorialSample(false)}
+              disabled={tutorialLoading}
+              className="btn-outline px-4 py-2 text-sm"
+            >
+              <Clipboard className="h-4 w-4" /> Load in editor
+            </button>
+            <button
+              onClick={() => loadTutorialSample(true)}
+              disabled={tutorialLoading || uploading}
+              className="btn-primary px-4 py-2 text-sm"
+            >
+              {tutorialLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+              Run demo
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       
       {/* Duplicate File Dialog */}
       <Dialog open={duplicateFileDialog.open} onOpenChange={(open) => !open && handleDuplicateCancel()}>
@@ -945,19 +1133,32 @@ function App() {
         </DialogContent>
       </Dialog>
 
-      {/* Sticky glass header */}
-      <header className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/80 backdrop-blur-xl">
-        <div className="container mx-auto px-4">
-          <div className="flex h-16 items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <img src="/fav-lg.png" alt="PipeCheck Logo" className={`${uiScale <= 0.875 ? 'w-8 h-8' : uiScale >= 1.125 ? 'w-11 h-11' : 'w-9 h-9'} rounded-xl ring-1 ring-slate-200 shadow-sm`} />
-              <div className="min-w-0">
-                <h1 className={`${sizeClasses.title} font-bold tracking-tight text-slate-900 leading-tight`}>PipeCheck</h1>
-                <p className="hidden sm:block truncate text-xs text-slate-500">Ops-grade CSV ingestion with dedup & idempotency</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="hidden md:flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2 py-1.5 shadow-sm">
+      <header className="masthead">
+        <div className="shell masthead-inner">
+          <a href="#top" className="wordmark" aria-label="PipeCheck home">
+            <span className="pipe-mark" aria-hidden="true"><i /><i /><i /></span>
+            PipeCheck
+          </a>
+          <nav aria-label="Workspace sections" className="desk-nav">
+            <a href="#history">Run history</a>
+            {selectedRun && <a href="#review">Review</a>}
+            <a href="#console">Console</a>
+          </nav>
+          <div className="desk-tools">
+              <ProviderSettings provider={provider} onChange={value => {
+                setProvider(value);
+                writeStoredJson('pipecheckRepairProvider', value);
+              }} />
+              <button
+                onClick={() => setTutorialOpen(true)}
+                className="btn-outline h-9 px-2.5 text-xs sm:px-3"
+                title="Open the guided demo"
+                aria-label="Open guided demo"
+              >
+                <BookOpen className="h-4 w-4 text-indigo-600" />
+                <span className="hidden sm:inline">Try demo</span>
+              </button>
+              <div className="scale-control hidden lg:flex items-center gap-1.5 px-2 py-1.5">
                 <button
                   onClick={() => setUiScale(0.75)}
                   className={`rounded-md p-1 transition-colors ${uiScale === 0.75 ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
@@ -966,7 +1167,7 @@ function App() {
                   <ZoomOut className="w-3.5 h-3.5" />
                 </button>
                 <input
-                  type="range"
+                  type="range" aria-label="Interface scale"
                   min="0.75"
                   max="1.375"
                   step="0.125"
@@ -974,7 +1175,7 @@ function App() {
                   onChange={(e) => setUiScale(parseFloat(e.target.value))}
                   className="h-1 w-20 cursor-pointer appearance-none rounded-full accent-indigo-600"
                   style={{
-                    background: `linear-gradient(to right, #4F46E5 0%, #4F46E5 ${((uiScale - 0.75) / 0.625) * 100}%, #E2E8F0 ${((uiScale - 0.75) / 0.625) * 100}%, #E2E8F0 100%)`
+                    background: `linear-gradient(to right, #31634d 0%, #31634d ${((uiScale - 0.75) / 0.625) * 100}%, #d5d9cd ${((uiScale - 0.75) / 0.625) * 100}%, #d5d9cd 100%)`
                   }}
                 />
                 <button
@@ -1002,12 +1203,11 @@ function App() {
               >
                 {soundEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
               </button>
-            </div>
           </div>
         </div>
       </header>
 
-      <div className="container relative mx-auto px-4 py-8">
+      <main className="shell desk-main">
 
         {/* Status Meanings Popup */}
         {showStatusMeaning && (
@@ -1068,198 +1268,106 @@ function App() {
           </div>
         )}
 
-        {stats && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
-            <div className={`card card-hover animate-rise ${sizeClasses.statCard}`} style={{ animationDelay: '0ms' }}>
-              <div className="flex items-center gap-4">
-                <div className="rounded-xl bg-indigo-50 p-2.5 text-indigo-600 ring-1 ring-indigo-100">
-                  <Activity className="w-5 h-5" />
-                </div>
-                <div>
-                  <p className="label-micro">Total Runs</p>
-                  <p className={`${sizeClasses.statValue} font-bold tracking-tight tabular-nums text-slate-900`}>{stats.total_runs}</p>
-                </div>
-              </div>
-            </div>
+        <div className="workspace-heading">
+          <h1>Ingestion workspace<span aria-hidden="true">.</span></h1>
+          {stats && <dl className="workspace-stats">
+            <div><dt>Runs</dt><dd>{stats.total_runs.toLocaleString()}</dd></div>
+            <div><dt>Rows processed</dt><dd>{stats.total_rows_processed.toLocaleString()}</dd></div>
+            <div><dt>Success rate</dt><dd>{stats.success_rate.toFixed(1)}<small>%</small></dd></div>
+            <div><dt>Last run</dt><dd className="last-status">{stats.last_run ? stats.last_run.status.replace('_', ' ') : 'No runs yet'}</dd></div>
+          </dl>}
+        </div>
 
-            <div className={`card card-hover animate-rise ${sizeClasses.statCard}`} style={{ animationDelay: '50ms' }}>
-              <div className="flex items-center gap-4">
-                <div className="rounded-xl bg-emerald-50 p-2.5 text-emerald-600 ring-1 ring-emerald-100">
-                  <CheckCircle className="w-5 h-5" />
-                </div>
-                <div>
-                  <p className="label-micro">Success Rate</p>
-                  <p className={`${sizeClasses.statValue} font-bold tracking-tight tabular-nums text-slate-900`}>{stats.success_rate.toFixed(1)}%</p>
-                </div>
-              </div>
-            </div>
-
-            <div className={`card card-hover animate-rise ${sizeClasses.statCard}`} style={{ animationDelay: '100ms' }}>
-              <div className="flex items-center gap-4">
-                <div className="rounded-xl bg-violet-50 p-2.5 text-violet-600 ring-1 ring-violet-100">
-                  <FileText className="w-5 h-5" />
-                </div>
-                <div>
-                  <p className="label-micro">Rows Processed</p>
-                  <p className={`${sizeClasses.statValue} font-bold tracking-tight tabular-nums text-slate-900`}>{stats.total_rows_processed.toLocaleString()}</p>
-                </div>
-              </div>
-            </div>
-
-            <div className={`card card-hover animate-rise ${sizeClasses.statCard}`} style={{ animationDelay: '150ms' }}>
-              <div className="flex items-center gap-4">
-                {stats.last_run ? (
-                  <>
-                    <div className="rounded-xl bg-slate-100 p-2.5 text-slate-500 ring-1 ring-slate-200">
-                      {getStatusIcon(stats.last_run.status)}
-                    </div>
-                    <div>
-                      <p className="label-micro">Last Run</p>
-                      <p className={`${sizeClasses.statValue} font-semibold tracking-tight capitalize text-slate-800`}>{stats.last_run.status.replace('_', ' ')}</p>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="rounded-xl bg-slate-100 p-2.5 text-slate-400 ring-1 ring-slate-200">
-                      <Clock className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <p className="label-micro">Last Run</p>
-                      <p className="font-medium text-slate-400">No runs yet</p>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2">
-            <div className="card animate-rise mb-6">
-              <div className={`${sizeClasses.card}`}>
-                <div className="mb-5 flex items-center gap-3">
-                  <div className="rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 p-2 text-white shadow-md shadow-indigo-500/25">
-                    <Upload className="w-4 h-4" />
+        <div className="intake-layout">
+          <div className="min-w-0">
+            <section className="import-panel" id="import" aria-labelledby="import-title">
+              <div className="import-inner">
+                <div className="import-heading">
+                  <h2 id="import-title">Import data</h2>
+                  <div className="source-tabs" aria-label="Import method">
+                    {[[ 'file', 'File', Upload ], [ 'paste', 'Paste', Clipboard ], [ 'url', 'URL', Link ]].map(([id, label, Icon]) => (
+                      <button key={id} aria-pressed={uploadMethod === id} onClick={() => setUploadMethod(id)}>
+                        <Icon size={15} />{label}
+                      </button>
+                    ))}
                   </div>
-                  <div>
-                    <h2 className={`${sizeClasses.title} card-title`}>Upload Data</h2>
-                    <p className="text-sm text-slate-500">Drop files, paste raw rows, or fetch from a URL</p>
-                  </div>
-                </div>
-
-                {/* Upload Method Tabs */}
-                <div className="segmented mb-5">
-                  <button
-                    onClick={() => setUploadMethod('file')}
-                    className={`segmented-item ${uploadMethod === 'file' ? 'segmented-item-active' : ''}`}
-                  >
-                    <Upload className="w-4 h-4" />
-                    File
-                  </button>
-                  <button
-                    onClick={() => setUploadMethod('paste')}
-                    className={`segmented-item ${uploadMethod === 'paste' ? 'segmented-item-active' : ''}`}
-                  >
-                    <Clipboard className="w-4 h-4" />
-                    Paste Raw Data
-                  </button>
                 </div>
 
                 {/* File Upload Method */}
                 {uploadMethod === 'file' && (
-                  <div>
-                    <div
-                      className={`group relative border-2 border-dashed rounded-xl text-center ${
-                        dragActive
-                          ? 'border-indigo-500 bg-indigo-50/60 ring-4 ring-indigo-500/10'
-                          : 'border-slate-300 bg-slate-50/60 hover:border-indigo-400 hover:bg-indigo-50/40'
-                      } ${uploading ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} ${
-                        uiScale <= 0.875 ? 'p-4' : uiScale >= 1.125 ? 'p-12' : 'p-8'
-                      }`}
-                      onDragEnter={handleDrag}
-                      onDragLeave={handleDrag}
-                      onDragOver={handleDrag}
-                      onDrop={handleDrop}
-                    >
-                      <input
-                        type="file"
-                        accept=".csv,.xlsx,.xls,.xlsm"
-                        multiple
-                        onChange={(e) => e.target.files && handleMultiFileUpload(e.target.files)}
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                        disabled={uploading}
-                      />
-                      <div className={`mx-auto mb-4 flex items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/25 transition-transform duration-200 group-hover:scale-105 ${uiScale <= 0.875 ? 'h-10 w-10' : uiScale >= 1.125 ? 'h-16 w-16' : 'h-14 w-14'}`}>
-                        <Upload className={uiScale <= 0.875 ? 'w-4 h-4' : uiScale >= 1.125 ? 'w-7 h-7' : 'w-6 h-6'} />
-                      </div>
-                      <p className={`${uiScale <= 0.875 ? 'text-sm' : uiScale >= 1.125 ? 'text-xl' : 'text-lg'} font-semibold text-slate-800`}>
-                        {uploading ? 'Uploading...' : 'Drag & drop files here'}
-                      </p>
-                      <p className={`${sizeClasses.container} text-slate-500 mt-1`}>
-                        or <span className="font-medium text-indigo-600">click to browse</span> — you can also paste a CSV anywhere on this page
-                      </p>
-                      <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5">
-                        <span className="chip border border-slate-200 bg-white text-slate-500">CSV</span>
-                        <span className="chip border border-slate-200 bg-white text-slate-500">XLSX</span>
-                        <span className="chip border border-slate-200 bg-white text-slate-500">XLS</span>
-                        <span className="chip border border-slate-200 bg-white text-slate-500">XLSM</span>
-                        <span className="chip bg-slate-100 text-slate-500">multiple files supported</span>
-                      </div>
+                  <div className={`drop-surface ${dragActive ? 'is-dragging' : ''}`}
+                    onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}>
+                    <input type="file" aria-label="Browse CSV or Excel files" accept=".csv,.xlsx,.xls,.xlsm" multiple
+                      disabled={uploading} onChange={e => e.target.files && handleMultiFileUpload(e.target.files)} />
+                    <div className="drop-copy">
+                      <h3>{uploading ? 'Uploading…' : dragActive ? 'Release to import' : 'Drop your files here'}</h3>
+                      <p>CSV or Excel · multiple files supported</p>
+                      <span className="browse-action">Browse files <ArrowUpRight size={17} /></span>
                     </div>
-
-                    {/* URL Input */}
-                    <div className="mt-5">
-                      <div className="flex items-center gap-1.5 mb-2">
-                        <Link className="w-3.5 h-3.5 text-slate-400" />
-                        <span className="text-sm text-slate-500">Or upload from URL</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="url"
-                          value={csvUrl}
-                          onChange={(e) => setCsvUrl(e.target.value)}
-                          placeholder="https://example.com/data.csv"
-                          className="input flex-1 px-3 py-2 text-sm"
-                          disabled={uploading}
-                        />
-                        <button
-                          onClick={handleUrlUpload}
-                          disabled={uploading || !csvUrl.trim()}
-                          className="btn-primary px-4 py-2 text-sm"
-                        >
-                          {uploading ? 'Fetching...' : 'Fetch'}
-                        </button>
-                      </div>
+                    <div className="sheet-stack" aria-hidden="true"><div className="sheet-face"><i /><b /></div></div>
+                  </div>
+                )}
+                {uploadMethod === 'url' && (
+                  <div className="import-form">
+                    <label className="field-label" htmlFor="source-url">Source URL</label>
+                    <div className="flex gap-2">
+                      <input id="source-url" type="url" value={csvUrl} onChange={e => setCsvUrl(e.target.value)}
+                        placeholder="https://example.com/data.csv" className="input min-w-0 flex-1 px-3 py-2" disabled={uploading} />
+                      <button onClick={handleUrlUpload} disabled={uploading || !csvUrl.trim()} className="btn-primary px-4 py-2">
+                        {uploading ? 'Fetching…' : 'Fetch file'}
+                      </button>
                     </div>
                   </div>
                 )}
 
                 {/* Paste Raw Data Method */}
                 {uploadMethod === 'paste' && (
-                  <div>
+                  <div className="import-form">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div className="segmented">
+                        <button
+                          onClick={() => setPasteFormat('csv')}
+                          className={`segmented-item ${pasteFormat === 'csv' ? 'segmented-item-active' : ''}`}
+                        >
+                          <FileText className="h-4 w-4" /> CSV
+                        </button>
+                        <button
+                          onClick={() => setPasteFormat('json')}
+                          className={`segmented-item ${pasteFormat === 'json' ? 'segmented-item-active' : ''}`}
+                        >
+                          <Braces className="h-4 w-4" /> JSON
+                        </button>
+                      </div>
+                      <button onClick={() => setTutorialOpen(true)} className="btn-ghost px-2 py-1 text-xs">
+                        <BookOpen className="h-3.5 w-3.5" /> Use sample data
+                      </button>
+                    </div>
                     <textarea
+                      aria-label="Data to paste" id="paste-data-input"
                       value={csvText}
                       onChange={(e) => setCsvText(e.target.value)}
-                      placeholder="Paste your raw CSV data here...
-Example:
-name,email,phone
-John Doe,john@example.com,555-1234
-Jane Smith,jane@example.com,555-5678"
-                      className="input w-full h-48 p-3 font-mono text-sm"
+                      placeholder={pasteFormat === 'json'
+                        ? '[\n  { "name": "Jane Doe", "email": "jane@example.com" }\n]'
+                        : 'name,email,phone\nJane Doe,jane@example.com,555-1234'}
+                      className="input h-44 w-full p-3 font-mono text-sm"
                       disabled={uploading}
                     />
+                    {pasteFormat === 'json' && (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Accepts a JSON array of objects and converts it to CSV locally before upload.
+                      </p>
+                    )}
                     <button
                       onClick={handlePasteUpload}
                       disabled={uploading || !csvText.trim()}
                       className="btn-primary mt-3 px-4 py-2 text-sm"
                     >
-                      {uploading ? 'Processing...' : 'Upload CSV Data'}
+                      {uploading ? 'Processing...' : `Process ${pasteFormat.toUpperCase()} data`}
                     </button>
                   </div>
                 )}
               </div>
-            </div>
+            </section>
 
             {/* Progress Bar */}
             {(uploading || currentUploadId) && (
@@ -1311,319 +1419,216 @@ Jane Smith,jane@example.com,555-5678"
               </div>
             )}
 
-            <div className="card animate-rise">
-              <div className={`${sizeClasses.card}`}>
-                <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
-                  <div className="flex items-center gap-2.5">
-                    <h2 className={`${sizeClasses.title} card-title`}>Recent Runs</h2>
-                    {runs.length > 0 && (
-                      <span className="chip bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100">{runs.length}</span>
-                    )}
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleDeleteAllRuns}
-                      className="btn-danger px-3 py-1.5 text-xs"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      Delete All
-                    </button>
-                    <button
-                      onClick={() => handleExportAll('csv')}
-                      className="btn-outline px-3 py-1.5 text-xs"
-                    >
-                      <Download className="w-3.5 h-3.5 text-emerald-600" />
-                      Export CSV
-                    </button>
-                    <button
-                      onClick={() => handleExportAll('excel')}
-                      className="btn-outline px-3 py-1.5 text-xs"
-                    >
-                      <Download className="w-3.5 h-3.5 text-emerald-600" />
-                      Export Excel
-                    </button>
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full table-fixed">
-                    <thead>
-                      <tr className="border-b border-slate-200">
-                        <th className="label-micro text-left py-2.5 px-2 w-28">Status</th>
-                        <th className="label-micro text-left py-2.5 px-2 w-40 truncate">Filename</th>
-                        <th className="label-micro text-left py-2.5 px-2 w-24">Created</th>
-                        <th className="label-micro text-right py-2.5 px-1 w-14">Rows</th>
-                        <th className="label-micro text-right py-2.5 px-1 w-14">Ins.</th>
-                        <th className="label-micro text-right py-2.5 px-1 w-14">Upd.</th>
-                        <th className="label-micro text-right py-2.5 px-1 w-20" title="Rejected rows / rows needing review">Err.</th>
-                        <th className="label-micro text-center py-2.5 px-1 w-14">Prog.</th>
-                        <th className="text-center py-2.5 px-1 w-12"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {runs.map((run) => (
-                        <tr
-                          key={run.run_id}
-                          className={`border-b border-slate-100 hover:bg-slate-50/80 cursor-pointer transition-colors ${selectedRun?.run_id === run.run_id ? 'bg-indigo-50/70 shadow-[inset_3px_0_0_0_#6366f1]' : ''}`}
-                          onClick={() => {
-                            setSelectedRun(run);
-                            fetchErrors(run.run_id);
-                            fetchProcessedData(run.run_id);
-                          }}
-                        >
-                          <td className="py-2.5 px-2">
-                            <span className={`${getStatusBadgeClass(run.status)} text-xs`}>
-                              <span className={`h-1.5 w-1.5 rounded-full bg-current ${run.status === 'processing' ? 'animate-pulse' : ''}`} />
-                              <span className="ml-1 capitalize hidden sm:inline">{run.status.replace('_', ' ')}</span>
-                            </span>
-                          </td>
-                          <td className={`${sizeClasses.table} px-2 truncate font-medium text-slate-700`} title={run.filename}>{run.filename}</td>
-                          <td className={`${sizeClasses.table} px-2 text-slate-500 text-xs`}>{formatDate(run.created_at)}</td>
-                          <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-slate-600`}>{run.total_rows.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-emerald-600`}>{run.rows_inserted.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-indigo-600`}>{run.rows_updated.toLocaleString()}</td>
-                          <td className={`${sizeClasses.table} px-1 text-right whitespace-nowrap tabular-nums`}>
-                            <span className="text-rose-600" title={`${run.rows_rejected ?? run.errors_count} rejected`}>
-                              {run.rows_rejected ?? run.errors_count}
-                            </span>
-                            {run.rows_flagged > 0 && (
-                              <span
-                                className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200"
-                                title={`${run.rows_flagged} row(s) repaired with invented values - review before use`}
-                              >
-                                <Flag className="w-3 h-3" />{run.rows_flagged}
-                              </span>
-                            )}
-                          </td>
-                          <td className={`${sizeClasses.table} text-center`}>
-                            {run.status === 'processing' ? (
-                              <div className="flex items-center justify-center gap-2">
-                                <span className="text-xs text-slate-500 tabular-nums w-8 text-right">
-                                  {processingProgress[run.run_id] || 0}%
-                                </span>
-                                <div className="w-16 bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                                  <div 
-                                    className="bg-gradient-to-r from-indigo-500 to-violet-500 h-1.5 rounded-full transition-all duration-300"
-                                    style={{ width: `${processingProgress[run.run_id] || 0}%` }}
-                                  />
-                                </div>
-                              </div>
-                            ) : run.status === 'completed' ? (
-                              <span className="text-emerald-600 text-xs font-medium">100%</span>
-                            ) : run.status === 'failed' ? (
-                              <span className="text-rose-600 text-xs font-medium">Failed</span>
-                            ) : (
-                              <span className="text-slate-300 text-xs">—</span>
-                            )}
-                          </td>
-                          <td className={`${sizeClasses.table} text-center`}>
-                            <div className="flex justify-center gap-0.5">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleReprocessRun(run.run_id);
-                                }}
-                                className="icon-btn h-7 w-7 hover:bg-indigo-50 hover:text-indigo-600"
-                                title="Reprocess file"
-                              >
-                                <RefreshCw className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteRun(run.run_id);
-                                }}
-                                className="icon-btn h-7 w-7 hover:bg-rose-50 hover:text-rose-600"
-                                title="Delete run"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {runs.length === 0 && (
-                    <div className="flex flex-col items-center justify-center py-12 text-center">
-                      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100">
-                        <FileText className="h-5 w-5 text-slate-400" />
-                      </div>
-                      <p className="font-medium text-slate-600">No runs yet</p>
-                      <p className="text-sm text-slate-400 mt-0.5">Upload a CSV or Excel file to get started.</p>
-                    </div>
-                  )}
-                </div>
+          </div>
+
+          <aside className="inspector" aria-label="Run details">
+            <div className="inspector-top"><span className="label-micro">{selectedRun ? 'Selected run' : 'Sample dataset'}</span>
+              {selectedRun && <span className={getStatusBadgeClass(selectedRun.status)}>{selectedRun.status.replace('_', ' ')}</span>}
+            </div>
+            {selectedRun ? <>
+              <h2 title={selectedRun.filename}>{selectedRun.filename}</h2>
+              <div className="run-meta">
+                <span title={selectedRun.run_id}>{selectedRun.run_id.slice(0, 8)}</span>
+                <span>Created {formatDate(selectedRun.created_at)}</span>
+                {selectedRun.completed_at && <span>Completed {formatDate(selectedRun.completed_at)}</span>}
+                {selectedRun.repair_provider && <span>{providerNames[selectedRun.repair_provider]}</span>}
+              </div>
+              <dl className="outcomes">
+                {[
+                  ['Total rows', selectedRun.total_rows], ['Inserted', selectedRun.rows_inserted],
+                  ['Updated', selectedRun.rows_updated], ['Skipped', selectedRun.rows_skipped],
+                  ['Rejected', selectedRun.rows_rejected], ['Needs review', selectedRun.rows_flagged],
+                ].map(([label, value]) => <div key={label} data-attention={Boolean(value && ['Rejected', 'Needs review'].includes(label))}>
+                  <dt>{label}</dt><dd>{(value || 0).toLocaleString()}</dd>
+                </div>)}
+              </dl>
+              {selectedRun.error_message && <p className="run-warning">{selectedRun.error_message}</p>}
+              {selectedRun.rows_flagged > 0 && <a className="review-notice" href="#review" onClick={() => setReviewRequest(prev => ({ runId: selectedRun.run_id, revision: prev.revision + 1 }))}>
+                <Flag size={14} /> Review {selectedRun.rows_flagged} {selectedRun.rows_flagged === 1 ? 'row' : 'rows'} with inferred values <ArrowUpRight size={14} />
+              </a>}
+              <div className="export-lines">
+                {[
+                  ['Processed data', handleExport, ['completed', 'partial_success'].includes(selectedRun.status)],
+                  ['Error report', handleExportErrors, ['partial_success', 'failed'].includes(selectedRun.status)],
+                ].filter(([, , visible]) => visible).map(([label, handler]) => <div key={label}>
+                  <span>{label}</span>
+                  {['csv', 'excel'].map(format => <button key={format} aria-label={`Export ${label.toLowerCase()} as ${format}`}
+                    onClick={() => handler(selectedRun.run_id, format)}><Download size={12} /> {format === 'csv' ? 'CSV' : 'Excel'}</button>)}
+                </div>)}
+              </div>
+            </> : <div className="sample-intro">
+              <h2>Try a sample import</h2>
+              <p>Four contact records with inconsistent emails and phone numbers. Compare the source values with the repairs.</p>
+              <div className="sample-file"><FileText size={16} /><span>pipecheck-demo.csv</span><a href={sampleUrl('csv')} download aria-label="Download sample CSV"><Download size={15} /></a></div>
+              <button className="btn-outline px-3 py-2 text-sm" onClick={() => setTutorialOpen(true)}>Open guided demo <ArrowUpRight size={15} /></button>
+            </div>}
+          </aside>
+        </div>
+        <section className="history-panel card" id="history">
+          <div className={`${sizeClasses.card}`}>
+            <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+              <div className="flex items-center gap-2.5">
+                <h2 className={`${sizeClasses.title} card-title`}>Run history</h2>
+                {runs.length > 0 && (
+                  <span className="chip bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100">{runs.length}</span>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  disabled={!runs.length} onClick={() => handleExportAll('csv')}
+                  className="btn-outline px-3 py-1.5 text-xs"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                  Export CSV
+                </button>
+                <button
+                  disabled={!runs.length} onClick={() => handleExportAll('excel')}
+                  className="btn-outline px-3 py-1.5 text-xs"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                  Export Excel
+                </button>
+                <button
+                  disabled={!runs.length} onClick={handleDeleteAllRuns}
+                  className="btn-danger px-3 py-1.5 text-xs"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete All
+                </button>
               </div>
             </div>
-          </div>
-
-          <div>
-            {selectedRun && (
-              <div className="card animate-rise">
-                <div className={`${sizeClasses.card}`}>
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <h2 className={`${sizeClasses.title} card-title`}>Run Details</h2>
-                    <span className="chip bg-slate-100 font-mono text-slate-500" title={selectedRun.run_id}>
-                      {selectedRun.run_id.slice(0, 8)}…
-                    </span>
-                  </div>
-                  <div className="divide-y divide-slate-100">
-                    <div className="flex items-center justify-between py-2">
-                      <span className="text-sm text-slate-500">Status</span>
-                      <span className={getStatusBadgeClass(selectedRun.status)}>
-                        {getStatusIcon(selectedRun.status)}
-                        <span className="ml-1 capitalize">{selectedRun.status.replace('_', ' ')}</span>
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between py-2">
-                      <span className="text-sm text-slate-500">Created</span>
-                      <span className={`${sizeClasses.table} text-slate-700`}>{formatDate(selectedRun.created_at)}</span>
-                    </div>
-                    {selectedRun.completed_at && (
-                      <div className="flex items-center justify-between py-2">
-                        <span className="text-sm text-slate-500">Completed</span>
-                        <span className={`${sizeClasses.table} text-slate-700`}>{formatDate(selectedRun.completed_at)}</span>
-                      </div>
-                    )}
-                  </div>
-                  {selectedRun.error_message && (
-                    <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-wider text-rose-600">Error</p>
-                      <p className="mt-1 text-sm text-rose-800">{selectedRun.error_message}</p>
-                    </div>
-                  )}
-
-                  <div className="mt-4 grid grid-cols-2 gap-3">
-                    <div className="rounded-xl bg-slate-50 p-3 text-center ring-1 ring-slate-200/70">
-                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-slate-900`}>{selectedRun.total_rows.toLocaleString()}</p>
-                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Total Rows</p>
-                    </div>
-                    <div className="rounded-xl bg-emerald-50 p-3 text-center ring-1 ring-emerald-100">
-                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-emerald-700`}>{selectedRun.rows_inserted.toLocaleString()}</p>
-                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-600/70">Inserted</p>
-                    </div>
-                    <div className="rounded-xl bg-indigo-50 p-3 text-center ring-1 ring-indigo-100">
-                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-indigo-700`}>{selectedRun.rows_updated.toLocaleString()}</p>
-                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-indigo-600/70">Updated</p>
-                    </div>
-                    <div className="rounded-xl bg-slate-50 p-3 text-center ring-1 ring-slate-200/70">
-                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-slate-500`}>{selectedRun.rows_skipped.toLocaleString()}</p>
-                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Skipped</p>
-                    </div>
-                    <div className="rounded-xl bg-rose-50 p-3 text-center ring-1 ring-rose-100">
-                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-rose-700`}>{(selectedRun.rows_rejected || 0).toLocaleString()}</p>
-                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-rose-600/70">Rejected</p>
-                    </div>
-                    <div className="rounded-xl bg-amber-50 p-3 text-center ring-1 ring-amber-100">
-                      <p className={`${uiScale <= 0.875 ? 'text-lg' : uiScale >= 1.125 ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums text-amber-700`}>{(selectedRun.rows_flagged || 0).toLocaleString()}</p>
-                      <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-amber-600/70">Needs Review</p>
-                    </div>
-                  </div>
-
-                  {selectedRun.rows_flagged > 0 && (
-                    <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
-                      <p className="text-xs text-amber-800 font-semibold flex items-center">
-                        <Flag className="w-3.5 h-3.5 mr-1.5" />
-                        {selectedRun.rows_flagged} row(s) were repaired with invented values
-                      </p>
-                      <p className="text-xs text-amber-700 mt-1">
-                        These rows were kept, but values such as emails or area codes were
-                        guessed rather than read from the file. Check the error report before
-                        treating them as source data.
-                      </p>
-                    </div>
-                  )}
-
-                  {(selectedRun.status === 'completed' || selectedRun.status === 'partial_success') && (
-                    <div className="mt-5 pt-4 border-t border-slate-100">
-                      <h3 className="label-micro mb-2">Export Data</h3>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleExport(selectedRun.run_id, 'csv')}
-                          className="btn-success flex-1 px-2 py-1.5 text-xs"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          CSV
-                        </button>
-                        <button
-                          onClick={() => handleExport(selectedRun.run_id, 'excel')}
-                          className="btn-success flex-1 px-2 py-1.5 text-xs"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Excel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {(selectedRun.status === 'partial_success' || selectedRun.status === 'failed') && (
-                    <div className="mt-4 pt-4 border-t border-slate-100">
-                      <h3 className="label-micro mb-2">Export Error Report</h3>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleExportErrors(selectedRun.run_id, 'csv')}
-                          className="btn-danger flex-1 px-2 py-1.5 text-xs"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Errors CSV
-                        </button>
-                        <button
-                          onClick={() => handleExportErrors(selectedRun.run_id, 'excel')}
-                          className="btn-danger flex-1 px-2 py-1.5 text-xs"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Errors Excel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {errors.length > 0 && (
-              <div className="card animate-rise mt-6">
-                <div className={`${sizeClasses.card}`}>
-                  <div className="mb-4 flex items-center gap-2.5">
-                    <div className="rounded-xl bg-rose-50 p-2 text-rose-500 ring-1 ring-rose-100">
-                      <AlertCircle className={`${sizeClasses.icon}`} />
-                    </div>
-                    <h2 className={`${sizeClasses.title} card-title`}>Errors</h2>
-                    <span className="chip bg-rose-50 text-rose-600 ring-1 ring-rose-100">{errors.length}</span>
-                  </div>
-                  <div className={`space-y-2 overflow-y-auto pr-1 ${
-                    uiScale <= 0.875 ? 'max-h-64' : uiScale >= 1.125 ? 'max-h-96' : 'max-h-80'
-                  }`}>
-                    {errors.map((error) => (
-                      <div key={error.id} className="rounded-xl border border-rose-100 bg-rose-50/60 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="chip bg-rose-100 font-mono text-rose-700">{error.error_code}</span>
-                          <span className="chip bg-white text-slate-500 ring-1 ring-slate-200">Row {error.row_index}</span>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[860px] table-fixed">
+                <colgroup>
+                  <col className="w-[15%]" />
+                  <col className="w-[17%]" />
+                  <col className="w-[14%]" />
+                  <col className="w-[9%]" />
+                  <col className="w-[9%]" />
+                  <col className="w-[7%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[11%]" />
+                </colgroup>
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    <th className="label-micro px-2 py-2.5 text-left">Status</th>
+                    <th className="label-micro truncate px-2 py-2.5 text-left">Filename</th>
+                    <th className="label-micro px-2 py-2.5 text-left">Created</th>
+                    <th className="label-micro px-1 py-2.5 text-right">Rows</th>
+                    <th className="label-micro px-1 py-2.5 text-right">Inserted</th>
+                    <th className="label-micro px-1 py-2.5 text-right">Updated</th>
+                    <th className="label-micro px-1 py-2.5 text-right" title="Rejected rows / rows needing review">Issues</th>
+                    <th className="label-micro px-1 py-2.5 text-center">Progress</th>
+                    <th className="px-1 py-2.5 text-center"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runs.map((run) => (
+                    <tr
+                      key={run.run_id}
+                      className={`border-b border-slate-100 hover:bg-slate-50/80 cursor-pointer transition-colors ${selectedRun?.run_id === run.run_id ? 'selected-run' : ''}`}
+                      onClick={() => {
+                        setSelectedRun(run);
+                      }}
+                    >
+                      <td className="py-2.5 px-2">
+                        <span className={`${getStatusBadgeClass(run.status)} text-xs`}>
+                          <span className={`h-1.5 w-1.5 rounded-full bg-current ${run.status === 'processing' ? 'animate-pulse' : ''}`} />
+                          <span className="ml-1 capitalize">{run.status.replace('_', ' ')}</span>
+                        </span>
+                      </td>
+                      <td className={`${sizeClasses.table} px-2 truncate font-medium text-slate-700`} title={run.filename}><button className="run-filename" aria-pressed={selectedRun?.run_id === run.run_id} onClick={() => setSelectedRun(run)}>{run.filename}</button></td>
+                      <td className={`${sizeClasses.table} px-2 text-slate-500 text-xs`}>{formatDate(run.created_at)}</td>
+                      <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-slate-600`}>{run.total_rows.toLocaleString()}</td>
+                      <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-emerald-600`}>{run.rows_inserted.toLocaleString()}</td>
+                      <td className={`${sizeClasses.table} px-1 text-right tabular-nums text-indigo-600`}>{run.rows_updated.toLocaleString()}</td>
+                      <td className={`${sizeClasses.table} px-1 text-right whitespace-nowrap tabular-nums`}>
+                        <span className={(run.rows_rejected ?? run.errors_count) ? 'text-rose-700' : 'text-slate-500'} title={`${run.rows_rejected ?? run.errors_count} rejected`}>
+                          {run.rows_rejected ?? run.errors_count}
+                        </span>
+                        {run.rows_flagged > 0 && (
+                          <span
+                            className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200"
+                            title={`${run.rows_flagged} row(s) repaired with invented values - review before use`}
+                          >
+                            <Flag className="w-3 h-3" />{run.rows_flagged}
+                          </span>
+                        )}
+                      </td>
+                      <td className={`${sizeClasses.table} text-center`}>
+                        {run.status === 'processing' ? (
+                          <div className="flex items-center justify-center gap-2">
+                            <span className="text-xs text-slate-500 tabular-nums w-8 text-right">
+                              {processingProgress[run.run_id] || 0}%
+                            </span>
+                            <div className="w-16 bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                              <div
+                                className="bg-gradient-to-r from-indigo-500 to-violet-500 h-1.5 rounded-full transition-all duration-300"
+                                style={{ width: `${processingProgress[run.run_id] || 0}%` }}
+                              />
+                            </div>
+                          </div>
+                        ) : run.status === 'completed' ? (
+                          <span className="text-emerald-600 text-xs font-medium">100%</span>
+                        ) : run.status === 'failed' ? (
+                          <span className="text-rose-600 text-xs font-medium">Failed</span>
+                        ) : (
+                          <span className="text-slate-300 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className={`${sizeClasses.table} text-center`}>
+                        <div className="flex justify-center gap-0.5">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleReprocessRun(run.run_id);
+                            }}
+                            disabled={run.status === 'pending' || run.status === 'processing'}
+                            className="icon-btn h-7 w-7 hover:bg-indigo-50 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            title={run.status === 'pending' || run.status === 'processing' ? 'Run is already processing' : 'Reprocess file'}
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteRun(run.run_id);
+                            }}
+                            className="icon-btn h-7 w-7 hover:bg-rose-50 hover:text-rose-600"
+                            title="Delete run"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
-                        <p className={`${sizeClasses.table} mt-1.5 text-slate-600`}>{error.error_message}</p>
-                      </div>
-                    ))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {runs.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100">
+                    <FileText className="h-5 w-5 text-slate-400" />
                   </div>
+                  <p className="font-medium text-slate-600">No runs yet</p>
+                  <p className="text-sm text-slate-400 mt-0.5">Upload a CSV or Excel file to get started.</p>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
-
-        {/* CSV Preview */}
-        {uploadedFileContent && (
-          <div className="mt-6">
-            <CSVPreview 
-              data={uploadedFileContent} 
-              errors={errors}
-              filename={uploadedFileName}
-              processedData={processedData}
-            />
+        </section>
+        {selectedRun && (
+          <div id="review" className="mt-6">
+            <CSVPreview key={`${selectedRun.run_id}-${reviewRequest.revision}`} run={selectedRun}
+              showFlagged={reviewRequest.runId === selectedRun.run_id}
+              data={filePreviewCache[selectedRun.run_id]?.content}
+              onExport={handleExport} onExportErrors={handleExportErrors} />
           </div>
         )}
 
         {/* Real-time Console */}
-        <div className="mt-6">
+        <div id="console" className="mt-6">
           <Console 
             logs={consoleLogs}
             onClear={handleClearLogs}
@@ -1665,7 +1670,7 @@ Jane Smith,jane@example.com,555-5678"
             </a>
           </p>
         </footer>
-      </div>
+      </main>
     </div>
   );
 }

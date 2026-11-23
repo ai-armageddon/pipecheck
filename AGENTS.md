@@ -25,13 +25,13 @@ of that file is what previously broke the Docker build.
 Run all three before considering a change done:
 
 ```bash
-cd backend && pytest                          # 40 tests, ~1.5s
+cd backend && pytest
+cd frontend && CI=true npx react-scripts test --watchAll=false
 cd frontend && CI=false npx react-scripts build
 cd frontend && npx react-scripts start        # port 3000, backend on 8001
 ```
 
-Three `react-hooks/exhaustive-deps` warnings in `App.js` are known and pre-existing.
-Any new warning is a regression.
+The build compiles with no warnings. Any new warning is a regression.
 
 ## Ports
 
@@ -66,11 +66,20 @@ These were all real bugs; the test suite covers each one.
   rows_rejected == total_rows`, and `errors_count` must equal the number of
   `error_logs` rows for the run. Every counter has to be written to the `IngestRun`
   record, not just returned from `process_csv`.
-- **Never drop a row silently.** Unparseable lines are collected via the
-  `on_bad_lines` callable (requires `engine="python"`), counted as rejected, and
-  logged as `MALFORMED_ROW` with their content.
+- **Never drop a row silently.** Records are split with the `csv` module, not
+  pandas' python engine, which silently drops or column-shifts rows on unclosed
+  quotes and early over-long rows. Over-long rows and a final record whose quote
+  never closes are counted as rejected and logged as `MALFORMED_ROW` with their
+  content.
+- **Runs left mid-processing by a restart are failed at startup.** The 409 guards
+  on delete/reprocess would otherwise block them forever.
+- **The pipeline yields between batches.** It never awaits real I/O, so without
+  `asyncio.sleep(0)` a large file freezes every other request until it ends.
+- **Excel is converted, not parsed as text.** The first sheet is written to a
+  temporary CSV; the upload itself is kept for reprocess.
 - **`row_index` is the zero-based source position.** `iterrows()` yields the frame's
-  absolute label, so never add `batch_start` to it — enumerate the batch instead.
+  absolute source-record label, including gaps left by malformed records. Use that
+  label directly without adding `batch_start`.
 - **`row_hash` is unique per `(run_id, row_hash)`.** A run owns its snapshot; a later
   overlapping upload must not move rows off an earlier run.
 - **Intra-run dedup uses the in-memory `seen_hashes` set.** The session is
